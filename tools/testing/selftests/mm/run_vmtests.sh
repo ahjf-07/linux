@@ -5,9 +5,12 @@
 # Kselftest framework requirement - SKIP code is 4.
 ksft_skip=4
 
-# Ensure relative paths work regardless of caller's cwd.
+# Verify invocation from the script directory.
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-cd "$SCRIPT_DIR" || exit 1
+if [ "$(pwd -P)" != "$SCRIPT_DIR" ]; then
+    echo "Please run this test from $SCRIPT_DIR" >&2
+    exit 1
+fi
 
 count_total=0
 count_pass=0
