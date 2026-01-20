@@ -3,11 +3,41 @@ set -eu
 
 usage() {
   cat >&2 <<'USAGE'
-usage: auto-net-ci.sh [-l] [-s] [-S "subtrees"] [-o outdir] [-t target_ref]
-                      [-e to_email] [--reset-baseline] [--force]
-                      [--no-test] [--no-build]
+usage: auto-net-ci.sh [-l] [-s] [-S "subtrees"] [-o outdir] [-t remote/branch] [-e to_email]
+                      [-c] [-m] [-N] [-F]
+                      [--reset-baseline] [--force] [--no-test] [--no-build]
 
-必须在 Linux 源码根目录发起调用（git rev-parse --show-toplevel == $PWD）。
+Defaults:
+  track  : upstream/master
+  switch : master (fast-forward only)
+  fetch  : only the tracked remote
+  state  : $O/.auto-net/
+
+Options:
+  -l  LLVM=1 (clang). default gcc
+  -s  enable sparse (passed to build-net.sh)
+  -S  sparse subtrees list (passed to build-net.sh)
+  -o  outdir (default: ../out/full-{clang|gcc})
+  -t  tracked ref (default: upstream/master)
+  -e  recipient (or env AUTO_NET_EMAIL)
+
+  -c  clean rebuild: remove $O (out dir) before build
+  -m  mrproper-ish: remove $O and also remove $O/.config (forces re-config)
+  -N  no-merge: skip git switch/ff-only merge, build current HEAD (dirty OK)
+  -F  force-run: run even if no update after fetch (same as --force)
+
+Long:
+  --full           force full net selftests (override default fast)
+  --force          same as -F
+  --no-test        skip vng tests
+  --no-build       skip build
+  --reset-baseline overwrite pinned baseline with this run
+
+Behavior:
+  - If no update AND not forced: send "no updates" mail and exit (no build/test).
+  - If update OR forced:
+      * default: require clean tree, switch to master, ff-only merge TARGET_REF, then build/test
+      * with -N: skip switch/merge; build/test current HEAD even if dirty
 USAGE
   exit 1
 }
@@ -21,7 +51,6 @@ require_git_toplevel_cwd() {
 }
 
 require_git_toplevel_cwd
-
 TOOL_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 need_exec() {
@@ -36,32 +65,47 @@ need_exec scan-nb.sh
 need_exec run-net.sh
 need_exec summ-net.sh
 
+# defaults
 LLVM=0
 SPARSE=0
 SPARSE_SUBTREES=""
 O=""
 TARGET_REF="upstream/master"
+SWITCH_BRANCH="master"
 TO_EMAIL="${AUTO_NET_EMAIL:-}"
+
 RESET_BASELINE=0
 FORCE=0
 NO_TEST=0
 NO_BUILD=0
 
-# pre-parse long options so getopts won't choke on "--xxx"
-# (we only accept our known long options here)
+CLEAN=0
+MRPROPER=0
+NO_MERGE=0
+TEST_FAST=1
+TEST_FFAST=0
+DRY_RUN=0
+
+# --- strip long options anywhere so getopts won't choke on "--xxx" ---
+_keep=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --reset-baseline) RESET_BASELINE=1; shift ;;
-    --force) FORCE=1; shift ;;
-    --no-test) NO_TEST=1; shift ;;
-    --no-build) NO_BUILD=1; shift ;;
+    --reset-baseline) RESET_BASELINE=1 ;;
+    --force) FORCE=1 ;;
+    --no-test) NO_TEST=1 ;;
+    --no-build) NO_BUILD=1 ;;
+    --ff) TEST_FFAST=1 ;;
+    --full) TEST_FAST=0; TEST_FFAST=0 ;;
+    --dry-run) DRY_RUN=1 ;;
     --) shift; break ;;
     --*) echo "unknown arg: $1" >&2; usage ;;
-    *) break ;;
+    *) _keep="$_keep $1" ;;
   esac
+  shift
 done
+set -- $_keep "$@"
 
-while getopts "lsS:o:t:e:h" opt; do
+while getopts "lsS:o:t:e:cmNFfh" opt; do
   case "$opt" in
     l) LLVM=1 ;;
     s) SPARSE=1 ;;
@@ -69,11 +113,16 @@ while getopts "lsS:o:t:e:h" opt; do
     o) O="$OPTARG" ;;
     t) TARGET_REF="$OPTARG" ;;
     e) TO_EMAIL="$OPTARG" ;;
+    c) CLEAN=1 ;;
+    m) MRPROPER=1 ;;
+    N) NO_MERGE=1 ;;
+    F) FORCE=1 ;;
+    f) TEST_FAST=1 ;;
     h|*) usage ;;
   esac
 done
 shift $((OPTIND - 1))
-# auto-pick recipient: -e > AUTO_NET_EMAIL; if still empty, error
+
 [ -n "$TO_EMAIL" ] || { echo "ERROR: missing recipient; use -e or set AUTO_NET_EMAIL" >&2; exit 2; }
 
 LINUX_ROOT="$(pwd)"
@@ -103,12 +152,9 @@ now="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_DIR="$RUNS_DIR/$now"
 mkdir -p "$RUN_DIR"
 
-run() { echo "+ $*" >&2; sh -c "$*"; }
+run() { echo "+ $*" >&2; bash -lc "$*"; }
 
-# fetch policy:
-# - default: fetch upstream only (avoid pulling every remote)
-# - if -t is remote/branch: fetch that remote only
-# - if -t is not remote/branch: still fetch upstream
+# fetch only tracked remote
 if echo "$TARGET_REF" | grep -q '/'; then
   FETCH_REMOTE="${TARGET_REF%%/*}"
 else
@@ -116,6 +162,20 @@ else
 fi
 
 if git remote get-url "$FETCH_REMOTE" >/dev/null 2>&1; then
+
+# --dry-run: only compute run-net args and exit (no fetch/build/scan/test)
+if [ "${DRY_RUN:-0}" -eq 1 ]; then
+  targs=""
+  [ "$LLVM" -eq 1 ] && targs="$targs -l"
+  targs="$targs -r \"$LINUX_ROOT\" -o \"$O\""
+  if [ "${TEST_FFAST:-0}" -eq 1 ]; then
+    targs="$targs -ff"
+  elif [ "${TEST_FAST:-0}" -eq 1 ]; then
+    targs="$targs -f"
+  fi
+  echo "[dry-run] run-net args: $targs" >&2
+  exit 0
+fi
   run "git fetch --prune \"$FETCH_REMOTE\""
 else
   echo "WARN: remote '$FETCH_REMOTE' not found; falling back to 'git fetch --prune'." >&2
@@ -124,22 +184,15 @@ fi
 
 old_ref="$(cat "$STATE_DIR/last_ref.$KEY" 2>/dev/null || true)"
 new_ref="$(git rev-parse "$TARGET_REF" 2>/dev/null || true)"
-head_ref="$(git rev-parse HEAD)"
+head_before="$(git rev-parse HEAD)"
 
 [ -n "$new_ref" ] || { echo "ERROR: cannot resolve TARGET_REF=$TARGET_REF" >&2; exit 2; }
 
-updated=0
-if [ "$FORCE" -eq 1 ]; then
-  updated=1
-elif [ -z "$old_ref" ]; then
-  updated=1
+ref_updated=0
+if [ -z "$old_ref" ]; then
+  ref_updated=1
 elif [ "$new_ref" != "$old_ref" ]; then
-  updated=1
-fi
-
-if [ "$updated" -eq 0 ]; then
-  echo "[auto] no update: $TARGET_REF still $new_ref; exit." >&2
-  exit 0
+  ref_updated=1
 fi
 
 {
@@ -149,15 +202,111 @@ fi
   echo "ARCH=$ARCH"
   echo "KEY=$KEY"
   echo "TARGET_REF=$TARGET_REF"
+  echo "SWITCH_BRANCH=$SWITCH_BRANCH"
   echo "OLD_REF=${old_ref:-<none>}"
   echo "NEW_REF=$new_ref"
-  echo "HEAD=$head_ref"
+  echo "HEAD_BEFORE=$head_before"
+  echo "FORCE=$FORCE"
+  echo "NO_MERGE=$NO_MERGE"
+  echo "CLEAN=$CLEAN"
+  echo "MRPROPER=$MRPROPER"
+  echo "NO_BUILD=$NO_BUILD"
+  echo "NO_TEST=$NO_TEST"
   echo
   git log -1 --oneline "$new_ref" || true
 } >"$RUN_DIR/meta.txt"
 
+# no update AND not forced -> mail and exit
+if [ "$ref_updated" -eq 0 ] && [ "$FORCE" -eq 0 ]; then
+  SUBJ="[auto-net][$KEY] no updates: $TARGET_REF still $new_ref"
+  MAIL="$RUN_DIR/mail.no-updates.mbox"
+  {
+    echo "From $(git rev-parse --short "$new_ref" 2>/dev/null || echo auto) Mon Sep 17 00:00:00 2001"
+    echo "From: $(git config --get sendemail.from 2>/dev/null || echo "$USER@$(hostname)")"
+    echo "To: $TO_EMAIL"
+    echo "Subject: $SUBJ"
+    echo
+    echo "No updates."
+    echo
+    cat "$RUN_DIR/meta.txt" || true
+    echo
+    echo "Artifacts:"
+    echo "  run dir  : $RUN_DIR"
+    echo "  state dir: $STATE_DIR"
+  } >"$MAIL"
+  run "git send-email --to \"$TO_EMAIL\" --confirm=never --no-chain-reply-to --suppress-cc=all \"$MAIL\""
+  echo "[auto] no update; mailed." >&2
+  exit 0
+fi
+
+# record last seen ref for next run (even if forced, we want stable ref tracking)
 echo "$new_ref" >"$STATE_DIR/last_ref.$KEY"
 
+# cleaning (only affects out dir)
+if [ "$MRPROPER" -eq 1 ]; then
+  CLEAN=1
+fi
+if [ "$CLEAN" -eq 1 ]; then
+  echo "[auto] CLEAN=1: wiping O=$O" >&2
+  rm -rf "$O"
+  mkdir -p "$O"
+fi
+if [ "$MRPROPER" -eq 1 ]; then
+  echo "[auto] MRPROPER=1: remove $O/.config (force re-config)" >&2
+  rm -f "$O/.config"
+fi
+
+# switch/merge unless -N
+if [ "$NO_MERGE" -eq 0 ]; then
+  # refuse if dirty
+  git diff --quiet && git diff --cached --quiet || {
+    SUBJ="[auto-net][$KEY] update/force but REFUSE switch: dirty tree"
+    MAIL="$RUN_DIR/mail.dirty-tree.mbox"
+    {
+      echo "From $(git rev-parse --short "$new_ref" 2>/dev/null || echo auto) Mon Sep 17 00:00:00 2001"
+      echo "From: $(git config --get sendemail.from 2>/dev/null || echo "$USER@$(hostname)")"
+      echo "To: $TO_EMAIL"
+      echo "Subject: $SUBJ"
+      echo
+      echo "Work tree dirty; refusing to switch/fast-forward."
+      echo "Use -N to skip merge, or stash/commit changes."
+      echo
+      cat "$RUN_DIR/meta.txt" || true
+    } >"$MAIL"
+    run "git send-email --to \"$TO_EMAIL\" --confirm=never --no-chain-reply-to --suppress-cc=all \"$MAIL\""
+    exit 2
+  }
+
+  if git show-ref --verify --quiet "refs/heads/$SWITCH_BRANCH"; then
+    run "git switch \"$SWITCH_BRANCH\""
+  else
+    run "git switch -c \"$SWITCH_BRANCH\""
+  fi
+
+  if ! git merge --ff-only "$TARGET_REF" >/dev/null 2>&1; then
+    SUBJ="[auto-net][$KEY] update/force but FF-only failed: $SWITCH_BRANCH <- $TARGET_REF"
+    MAIL="$RUN_DIR/mail.ff-failed.mbox"
+    {
+      echo "From $(git rev-parse --short "$new_ref" 2>/dev/null || echo auto) Mon Sep 17 00:00:00 2001"
+      echo "From: $(git config --get sendemail.from 2>/dev/null || echo "$USER@$(hostname)")"
+      echo "To: $TO_EMAIL"
+      echo "Subject: $SUBJ"
+      echo
+      echo "Fast-forward failed. Local '$SWITCH_BRANCH' likely diverged."
+      echo
+      cat "$RUN_DIR/meta.txt" || true
+    } >"$MAIL"
+    run "git send-email --to \"$TO_EMAIL\" --confirm=never --no-chain-reply-to --suppress-cc=all \"$MAIL\""
+    exit 2
+  fi
+else
+  echo "NOTE: -N set, skip switch/merge; building current HEAD" >>"$RUN_DIR/meta.txt"
+fi
+
+head_after="$(git rev-parse HEAD)"
+echo "HEAD_AFTER=$head_after" >>"$RUN_DIR/meta.txt"
+
+# build + scan
 if [ "$NO_BUILD" -eq 0 ]; then
   if [ ! -f "$O/.config" ]; then
     cargs=""
@@ -175,8 +324,9 @@ else
   echo "[auto] --no-build: skip build" >"$RUN_DIR/build.all.log"
 fi
 
-run "\"$TOOL_DIR/scan-nb.sh\" -lw -s -r \"$LINUX_ROOT\" -o \"$O\" >\"$RUN_DIR/scan.txt\" 2>&1 || true"
+run "\"$TOOL_DIR/scan-nb.sh\" -e -w -s -n 120 -r \"$LINUX_ROOT\" -o \"$O\" >\"$RUN_DIR/scan.txt\" 2>&1 || true"
 
+# tests (方案A): read source-root .kselftest-out then copy to RUN_DIR
 TEST_LOG_SRC="$LINUX_ROOT/.kselftest-out/net.selftests.log"
 TEST_LOG_DST="$RUN_DIR/net.selftests.log"
 SUMM_LOG="$RUN_DIR/net.summ.txt"
@@ -184,7 +334,13 @@ SUMM_LOG="$RUN_DIR/net.summ.txt"
 if [ "$NO_TEST" -eq 0 ]; then
   targs=""
   [ "$LLVM" -eq 1 ] && targs="$targs -l"
-  targs="$targs -r \"$LINUX_ROOT\" -o \"$O\" -ff"
+  targs="$targs -r \"$LINUX_ROOT\" -o \"$O\""
+  # default: full net selftests; speed up only if requested
+  if [ "${TEST_FFAST:-0}" -eq 1 ]; then
+    targs="$targs -ff"
+  elif [ "${TEST_FAST:-0}" -eq 1 ]; then
+    targs="$targs -f"
+  fi
   run "\"$TOOL_DIR/run-net.sh\" $targs |& tee \"$RUN_DIR/run-net.host.log\""
 
   if [ -f "$TEST_LOG_SRC" ]; then
@@ -197,6 +353,73 @@ else
   echo "[auto] --no-test: skip tests" >"$SUMM_LOG"
 fi
 
+
+essentials() {
+  out="$1"
+  scan="$RUN_DIR/scan.txt"
+  summ="$RUN_DIR/net.summ.txt"
+
+  {
+    echo "== SUBSTANTIVE SUMMARY =="
+    echo
+
+    echo "## build + sparse (filtered)"
+
+    # Keep only:
+    # - per-log summary block (==== build scan summary ==== ... sparse_effective ...)
+    # - non-empty errors/warnings/sparse lists
+    # Drop: "top messages" and any empty section headers.
+    awk '
+      function flush_summary() {
+        if (sum != "") { printf "%s\n", sum; sum=""; }
+      }
+      function flush_list(title, list) {
+        if (list != "") {
+          printf "==== %s ====\n%s\n", title, list;
+        }
+      }
+      BEGIN{
+        sum=""; in_sum=0;
+        sec=""; list="";
+      }
+
+      /^==== build scan summary ====$/ {
+        flush_list(sec, list);
+        sec=""; list="";
+        flush_summary();
+        in_sum=1;
+        sum = $0 "\n";
+        next
+      }
+
+      in_sum==1 {
+        sum = sum $0 "\n";
+        # end of summary block: blank line
+        if ($0 ~ /^$/) { in_sum=0; flush_summary(); }
+        next
+      }
+
+      /^==== errors \(first /           { flush_list(sec, list); sec="errors"; list=""; next }
+      /^==== warnings \(first /         { flush_list(sec, list); sec="warnings"; list=""; next }
+      /^==== sparse diagnostics \(first /{ flush_list(sec, list); sec="sparse diagnostics"; list=""; next }
+
+      # explicitly ignore "top messages" section and anything after its header until next summary
+      /^==== sparse diagnostics \(top messages\) ====$/ { flush_list(sec, list); sec=""; list=""; next }
+
+      # collect only actual diagnostic lines (scan-nb prefixes with N:)
+      (sec!="") && ($0 ~ /^[0-9]+:/) { list = list $0 "\n"; next }
+
+      END{
+        flush_list(sec, list);
+        flush_summary();
+      }
+    ' "$scan" 2>/dev/null || true
+
+    echo
+    echo "## selftests (net)"
+    cat "$summ" 2>/dev/null || true
+  } >"$out"
+}
 bundle() {
   out="$1"
   {
@@ -213,6 +436,27 @@ bundle() {
 
 THIS_TXT="$RUN_DIR/result.txt"
 bundle "$THIS_TXT"
+
+# --- substantive summary (for email diff) ---
+THIS_ESS="$RUN_DIR/essentials.txt"
+essentials "$THIS_ESS"
+
+PREV_ESS="$PREV_DIR/essentials.txt"
+BASE_ESS="$BASE_DIR/essentials.txt"
+DIFF_PREV_ESS="$RUN_DIR/diff.substantive.vs-prev.txt"
+DIFF_BASE_ESS="$RUN_DIR/diff.substantive.vs-baseline.txt"
+
+if [ -f "$PREV_ESS" ]; then
+  diff -u "$PREV_ESS" "$THIS_ESS" >"$DIFF_PREV_ESS" || true; [ -s "$DIFF_PREV_ESS" ] || echo "(no substantive diff vs prev)" >"$DIFF_PREV_ESS"
+else
+  echo "(no previous substantive summary)" >"$DIFF_PREV_ESS"
+fi
+
+if [ -f "$BASE_ESS" ]; then
+  diff -u "$BASE_ESS" "$THIS_ESS" >"$DIFF_BASE_ESS" || true; [ -s "$DIFF_BASE_ESS" ] || echo "(no substantive diff vs baseline)" >"$DIFF_BASE_ESS"
+else
+  echo "(no baseline yet)" >"$DIFF_BASE_ESS"
+fi
 
 PREV_TXT="$PREV_DIR/result.txt"
 BASE_TXT="$BASE_DIR/result.txt"
@@ -232,11 +476,13 @@ else
 fi
 
 cp -f "$THIS_TXT" "$PREV_TXT"
+cp -f "$THIS_ESS" "$PREV_ESS"
 if [ "$RESET_BASELINE" -eq 1 ] || [ ! -f "$BASE_TXT" ]; then
   cp -f "$THIS_TXT" "$BASE_TXT"
+  cp -f "$THIS_ESS" "$BASE_ESS"
 fi
 
-SUBJ="[auto-net][$KEY] $TARGET_REF updated: ${old_ref:-none} -> $new_ref"
+SUBJ="[auto-net][$KEY] run done: ref_updated=$ref_updated force=$FORCE HEAD=$head_after"
 MAIL="$RUN_DIR/mail.mbox"
 
 {
@@ -245,17 +491,17 @@ MAIL="$RUN_DIR/mail.mbox"
   echo "To: $TO_EMAIL"
   echo "Subject: $SUBJ"
   echo
-  echo "== META =="
-  cat "$RUN_DIR/meta.txt" || true
+  echo "== DIFF (substantive) vs PREV =="
+  sed -n '1,260p' "$DIFF_PREV_ESS" || true
   echo
-  echo "== RESULT (scan + test summary) =="
+  echo "== DIFF (substantive) vs BASELINE =="
+  sed -n '1,260p' "$DIFF_BASE_ESS" || true
+  echo
+  echo "== CURRENT (substantive summary) =="
+  cat "$THIS_ESS" || true
+  echo
+  echo "== FULL RESULT (meta + scan + test) =="
   cat "$THIS_TXT" || true
-  echo
-  echo "== DIFF vs PREV =="
-  sed -n '1,260p' "$DIFF_PREV" || true
-  echo
-  echo "== DIFF vs BASELINE =="
-  sed -n '1,260p' "$DIFF_BASE" || true
   echo
   echo "Artifacts:"
   echo "  state dir: $STATE_DIR"
