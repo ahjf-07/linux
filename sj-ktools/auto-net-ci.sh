@@ -137,7 +137,7 @@ fi
 O="$(realpath -m "$O")"
 mkdir -p "$O"
 
-STATE_DIR="$O/.auto-net"
+STATE_DIR="${AUTO_NET_STATE_DIR:-$LINUX_ROOT/../out/auto-net-state}"
 mkdir -p "$STATE_DIR"
 
 ARCH="$(uname -m)"
@@ -146,7 +146,7 @@ KEY="${ARCH}.$([ "$LLVM" -eq 1 ] && echo clang || echo gcc)"
 PREV_DIR="$STATE_DIR/prev/$KEY"
 BASE_DIR="$STATE_DIR/baseline/$KEY"
 RUNS_DIR="$STATE_DIR/runs/$KEY"
-mkdir -p "$PREV_DIR" "$BASE_DIR" "$RUNS_DIR"
+mkdir -p "$STATE_DIR/prev/$KEY" "$STATE_DIR/baseline/$KEY" "$STATE_DIR/runs/$KEY"
 
 now="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_DIR="$RUNS_DIR/$now"
@@ -250,6 +250,7 @@ if [ "$CLEAN" -eq 1 ]; then
   echo "[auto] CLEAN=1: wiping O=$O" >&2
   rm -rf "$O"
   mkdir -p "$O"
+  mkdir -p "$STATE_DIR/prev/$KEY" "$STATE_DIR/baseline/$KEY" "$STATE_DIR/runs/$KEY"
 fi
 if [ "$MRPROPER" -eq 1 ]; then
   echo "[auto] MRPROPER=1: remove $O/.config (force re-config)" >&2
