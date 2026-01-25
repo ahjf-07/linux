@@ -4,8 +4,8 @@ set -eu
 usage() {
   cat >&2 <<'USAGE'
 usage: auto-bpf-ci.sh [-l] [-s] [-S "subtrees"] [-o outdir] [-t remote/branch] [-e to_email]
-                      [-c] [-m] [-N] [-F]
-                      [--reset-baseline] [--force] [--no-test] [--no-build]
+                      [-c] [-m] [-N] [-F] [-f N] [-P cpus] [-M mem]
+                      [--ff] [--full] [--reset-baseline] [--force] [--no-test] [--no-build]
 
 Defaults:
   track  : upstream/master
@@ -24,12 +24,21 @@ Options:
   -m  mrproper-ish: remove $O and also remove $O/.config (forces re-config)
   -N  no-merge: skip git switch/ff-only merge, build current HEAD (dirty OK)
   -F  force-run: run even if no update after fetch (same as --force)
+  -f  fast tests: run N subtests (default: 30)
+  -P  vng guest cpus (passed to run-bpf.sh)
+  -M  vng guest memory (passed to run-bpf.sh, e.g. 2G)
 
 Long:
+  --ff             faster tests (run 10 subtests)
+  --full           full test_progs run
+  --json           enable test_progs json summary (default)
+  --no-json        disable test_progs json summary
   --force          same as -F
   --no-test        skip vng tests
   --no-build       skip build
   --reset-baseline overwrite pinned baseline with this run
+  --cpu N          same as -P
+  --mem  SIZE      same as -M
 USAGE
   exit 1
 }
@@ -76,6 +85,10 @@ NO_MERGE=0
 TEST_FAST=1
 TEST_FFAST=0
 DRY_RUN=0
+CPUS=2
+MEM=2G
+FAST_COUNT=30
+JSON_SUMMARY=1
 
 _keep=""
 while [ $# -gt 0 ]; do
@@ -84,7 +97,12 @@ while [ $# -gt 0 ]; do
     --force) FORCE=1 ;;
     --no-test) NO_TEST=1 ;;
     --no-build) NO_BUILD=1 ;;
+    --ff) TEST_FFAST=1; TEST_FAST=0 ;;
     --full) TEST_FAST=0; TEST_FFAST=0 ;;
+    --json) JSON_SUMMARY=1 ;;
+    --no-json) JSON_SUMMARY=0 ;;
+    --cpu) CPUS="$2"; shift ;;
+    --mem) MEM="$2"; shift ;;
     --dry-run) DRY_RUN=1 ;;
     --) shift; break ;;
     --*) echo "unknown arg: $1" >&2; usage ;;
@@ -94,7 +112,7 @@ while [ $# -gt 0 ]; do
 done
 set -- $_keep "$@"
 
-while getopts "lgsS:o:t:e:cmNFfh" opt; do
+while getopts "lgsS:o:t:e:cmNFf:P:M:" opt; do
   case "$opt" in
     l) LLVM=1 ;;
     g) LLVM=0 ;;
@@ -107,7 +125,13 @@ while getopts "lgsS:o:t:e:cmNFfh" opt; do
     m) MRPROPER=1 ;;
     N) NO_MERGE=1 ;;
     F) FORCE=1 ;;
-    f) TEST_FAST=1 ;;
+    f)
+      TEST_FAST=1
+      TEST_FFAST=0
+      FAST_COUNT="$OPTARG"
+      ;;
+    P) CPUS="$OPTARG" ;;
+    M) MEM="$OPTARG" ;;
     h|*) usage ;;
   esac
 done
@@ -155,9 +179,13 @@ if [ "${DRY_RUN:-0}" -eq 1 ]; then
   [ "$LLVM" -eq 1 ] && targs="$targs -l"
   targs="$targs -r \"$LINUX_ROOT\" -o \"$O\""
   if [ "${TEST_FFAST:-0}" -eq 1 ]; then
-    targs="$targs -ff"
+    targs="$targs --ff"
   elif [ "${TEST_FAST:-0}" -eq 1 ]; then
-    targs="$targs -f"
+    targs="$targs -f \"$FAST_COUNT\""
+  fi
+  targs="$targs -p \"$CPUS\" -m \"$MEM\""
+  if [ "$JSON_SUMMARY" -eq 1 ]; then
+    targs="$targs -j"
   fi
   echo "[dry-run] run-bpf args: $targs" >&2
   exit 0
@@ -197,6 +225,10 @@ fi
   echo "MRPROPER=$MRPROPER"
   echo "NO_BUILD=$NO_BUILD"
   echo "NO_TEST=$NO_TEST"
+  echo "CPUS=$CPUS"
+  echo "MEM=$MEM"
+  echo "FAST_COUNT=$FAST_COUNT"
+  echo "JSON_SUMMARY=$JSON_SUMMARY"
   echo
   git log -1 --oneline "$new_ref" || true
 } >"$RUN_DIR/meta.txt"
@@ -281,6 +313,7 @@ if [ "$NO_MERGE" -eq 0 ]; then
     exit 2
   fi
 fi
+head_after="$(git rev-parse HEAD)"
 
 if [ "$NO_BUILD" -eq 0 ]; then
   if [ ! -f "$O/.config" ]; then
@@ -307,10 +340,12 @@ else
   echo "[auto] --no-build: skip build" >"$RUN_DIR/build.all.log"
 fi
 
-run "\"$TOOL_DIR/scan-nb.sh\" -e -w -s -n 120 -r \"$LINUX_ROOT\" -o \"$O\" >\"$RUN_DIR/scan.txt\" 2>&1 || true"
+run "\"$TOOL_DIR/scan-nb.sh\" -e -w -s -n 120 -k bpf -r \"$LINUX_ROOT\" -o \"$O\" >\"$RUN_DIR/scan.txt\" 2>&1 || true"
 
 TEST_LOG_SRC="$LINUX_ROOT/.kselftest-out/bpf.selftests.log"
 TEST_LOG_DST="$RUN_DIR/bpf.selftests.log"
+TEST_JSON_SRC="$LINUX_ROOT/.kselftest-out/bpf-json"
+TEST_JSON_DST="$RUN_DIR/bpf-json"
 SUMM_LOG="$RUN_DIR/bpf.summ.txt"
 
 if [ "$NO_TEST" -eq 0 ]; then
@@ -318,14 +353,22 @@ if [ "$NO_TEST" -eq 0 ]; then
   [ "$LLVM" -eq 1 ] && targs="$targs -l"
   targs="$targs -r \"$LINUX_ROOT\" -o \"$O\""
   if [ "${TEST_FFAST:-0}" -eq 1 ]; then
-    targs="$targs -ff"
+    targs="$targs --ff"
   elif [ "${TEST_FAST:-0}" -eq 1 ]; then
-    targs="$targs -f"
+    targs="$targs -f \"$FAST_COUNT\""
+  fi
+  targs="$targs -p \"$CPUS\" -m \"$MEM\""
+  if [ "$JSON_SUMMARY" -eq 1 ]; then
+    targs="$targs -j"
   fi
   run "\"$TOOL_DIR/run-bpf.sh\" $targs |& tee \"$RUN_DIR/run-bpf.host.log\""
 
   if [ -f "$TEST_LOG_SRC" ]; then
     cp -f "$TEST_LOG_SRC" "$TEST_LOG_DST"
+    if [ -d "$TEST_JSON_SRC" ]; then
+      rm -rf "$TEST_JSON_DST"
+      cp -a "$TEST_JSON_SRC" "$TEST_JSON_DST"
+    fi
     run "\"$TOOL_DIR/summ-bpf.sh\" \"$TEST_LOG_DST\" >\"$SUMM_LOG\""
   else
     echo "ERROR: missing $TEST_LOG_SRC" >"$SUMM_LOG"
@@ -334,7 +377,131 @@ else
   echo "[auto] --no-test: skip tests" >"$SUMM_LOG"
 fi
 
-SUBJ="[auto-bpf][$KEY] $TARGET_REF -> $new_ref"
+essentials() {
+  out="$1"
+  scan="$RUN_DIR/scan.txt"
+  summ="$RUN_DIR/bpf.summ.txt"
+
+  {
+    echo "== SUBSTANTIVE SUMMARY =="
+    echo
+
+    echo "## build + sparse (filtered)"
+
+    awk '
+      function flush_summary() {
+        if (sum != "") { printf "%s\n", sum; sum=""; }
+      }
+      function normalize_line(line) {
+        sub(/^[0-9]+:/, "", line);
+        gsub(/:[0-9]+(:[0-9]+)?:/, ":", line);
+        return line;
+      }
+      function flush_list(title, list) {
+        if (list != "") {
+          printf "==== %s ====\n%s\n", title, list;
+        }
+      }
+      BEGIN{
+        sum=""; in_sum=0;
+        sec=""; list="";
+      }
+
+      /^==== build scan summary ====$/ {
+        flush_list(sec, list);
+        sec=""; list="";
+        flush_summary();
+        in_sum=1;
+        sum = $0 "\n";
+        next
+      }
+
+      in_sum==1 {
+        sum = sum $0 "\n";
+        if ($0 ~ /^$/) { in_sum=0; flush_summary(); }
+        next
+      }
+
+      /^==== errors \(first /           { flush_list(sec, list); sec="errors"; list=""; next }
+      /^==== warnings \(first /         { flush_list(sec, list); sec="warnings"; list=""; next }
+      /^==== sparse diagnostics \(first /{ flush_list(sec, list); sec="sparse diagnostics"; list=""; next }
+      /^==== sparse diagnostics \(top messages\) ====$/ { flush_list(sec, list); sec=""; list=""; next }
+
+      (sec!="") && ($0 ~ /^[0-9]+:/) { list = list normalize_line($0) "\n"; next }
+
+      END{
+        flush_list(sec, list);
+        flush_summary();
+      }
+    ' "$scan" 2>/dev/null || true
+
+    echo
+    echo "## selftests (bpf)"
+    cat "$summ" 2>/dev/null || true
+  } >"$out"
+}
+bundle() {
+  out="$1"
+  {
+    echo "## meta"
+    cat "$RUN_DIR/meta.txt" || true
+    echo
+    echo "## scan"
+    cat "$RUN_DIR/scan.txt" || true
+    echo
+    echo "## bpf summary"
+    cat "$RUN_DIR/bpf.summ.txt" || true
+  } >"$out"
+}
+
+THIS_TXT="$RUN_DIR/result.txt"
+bundle "$THIS_TXT"
+
+THIS_ESS="$RUN_DIR/essentials.txt"
+essentials "$THIS_ESS"
+
+PREV_ESS="$PREV_DIR/essentials.txt"
+BASE_ESS="$BASE_DIR/essentials.txt"
+DIFF_PREV_ESS="$RUN_DIR/diff.substantive.vs-prev.txt"
+DIFF_BASE_ESS="$RUN_DIR/diff.substantive.vs-baseline.txt"
+
+if [ -f "$PREV_ESS" ]; then
+  diff -u "$PREV_ESS" "$THIS_ESS" >"$DIFF_PREV_ESS" || true; [ -s "$DIFF_PREV_ESS" ] || echo "(no substantive diff vs prev)" >"$DIFF_PREV_ESS"
+else
+  echo "(no previous substantive summary)" >"$DIFF_PREV_ESS"
+fi
+
+if [ -f "$BASE_ESS" ]; then
+  diff -u "$BASE_ESS" "$THIS_ESS" >"$DIFF_BASE_ESS" || true; [ -s "$DIFF_BASE_ESS" ] || echo "(no substantive diff vs baseline)" >"$DIFF_BASE_ESS"
+else
+  echo "(no baseline yet)" >"$DIFF_BASE_ESS"
+fi
+
+PREV_TXT="$PREV_DIR/result.txt"
+BASE_TXT="$BASE_DIR/result.txt"
+DIFF_PREV="$RUN_DIR/diff.vs-prev.txt"
+DIFF_BASE="$RUN_DIR/diff.vs-baseline.txt"
+
+if [ -f "$PREV_TXT" ]; then
+  diff -u "$PREV_TXT" "$THIS_TXT" >"$DIFF_PREV" || true
+else
+  echo "(no previous result)" >"$DIFF_PREV"
+fi
+
+if [ -f "$BASE_TXT" ]; then
+  diff -u "$BASE_TXT" "$THIS_TXT" >"$DIFF_BASE" || true
+else
+  echo "(no pinned baseline yet)" >"$DIFF_BASE"
+fi
+
+cp -f "$THIS_TXT" "$PREV_TXT"
+cp -f "$THIS_ESS" "$PREV_ESS"
+if [ "$RESET_BASELINE" -eq 1 ] || [ ! -f "$BASE_TXT" ]; then
+  cp -f "$THIS_TXT" "$BASE_TXT"
+  cp -f "$THIS_ESS" "$BASE_ESS"
+fi
+
+SUBJ="[auto-bpf][$KEY] run done: ref_updated=$ref_updated force=$FORCE HEAD=$head_after"
 MAIL="$RUN_DIR/mail.result.mbox"
 {
   echo "From $(git rev-parse --short "$new_ref" 2>/dev/null || echo auto) Mon Sep 17 00:00:00 2001"
@@ -342,20 +509,24 @@ MAIL="$RUN_DIR/mail.result.mbox"
   echo "To: $TO_EMAIL"
   echo "Subject: $SUBJ"
   echo
+  echo "== DIFF (substantive) vs PREV =="
+  sed -n '1,260p' "$DIFF_PREV_ESS" || true
+  echo
+  echo "== DIFF (substantive) vs BASELINE =="
+  sed -n '1,260p' "$DIFF_BASE_ESS" || true
+  echo
   echo "== CURRENT (substantive summary) =="
+  cat "$THIS_ESS" || true
   echo
-  sed -n '1,220p' "$RUN_DIR/scan.txt" 2>/dev/null || true
-  echo
-  echo "== selftests (bpf) =="
-  sed -n '1,220p' "$SUMM_LOG" 2>/dev/null || true
+  echo "== FULL RESULT (meta + scan + test) =="
+  cat "$THIS_TXT" || true
   echo
   echo "Artifacts:"
-  echo "  run dir  : $RUN_DIR"
-  echo "  out dir  : $O"
   echo "  state dir: $STATE_DIR"
+  echo "  run dir  : $RUN_DIR"
+  echo "  O dir    : $O"
 } >"$MAIL"
 
 run "git send-email --to \"$TO_EMAIL\" --confirm=never --no-chain-reply-to --suppress-cc=all \"$MAIL\""
 
 echo "[auto] done. run_dir=$RUN_DIR" >&2
-

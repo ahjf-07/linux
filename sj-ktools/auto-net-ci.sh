@@ -325,7 +325,7 @@ else
   echo "[auto] --no-build: skip build" >"$RUN_DIR/build.all.log"
 fi
 
-run "\"$TOOL_DIR/scan-nb.sh\" -e -w -s -n 120 -r \"$LINUX_ROOT\" -o \"$O\" >\"$RUN_DIR/scan.txt\" 2>&1 || true"
+run "\"$TOOL_DIR/scan-nb.sh\" -e -w -s -n 120 -k net -r \"$LINUX_ROOT\" -o \"$O\" >\"$RUN_DIR/scan.txt\" 2>&1 || true"
 
 # tests (方案A): read source-root .kselftest-out then copy to RUN_DIR
 TEST_LOG_SRC="$LINUX_ROOT/.kselftest-out/net.selftests.log"

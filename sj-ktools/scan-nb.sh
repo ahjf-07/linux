@@ -3,7 +3,7 @@
 # POSIX /bin/sh compatible.
 #
 # usage:
-#   ./scan-nb.sh [-e] [-w] [-s] [-n N] [-l] [-r linux_root] [-o outdir] [-I] [log1 ...]
+#   ./scan-nb.sh [-e] [-w] [-s] [-n N] [-l] [-r linux_root] [-o outdir] [-I] [-k kind] [log1 ...]
 #     -e : show errors
 #     -w : show warnings
 #     -s : show sparse diagnostics (warning/error)
@@ -13,14 +13,16 @@
 #     -o : output dir (default: <linux_root>/../out/full-{gcc,clang})
 #     -I : include MODULE_INFO sparse flood in counts/output (default: filtered out)
 #
-# If no log is provided, it will scan common logs under outdir:
-#   build.kernel.log build.headers.log build.selftests.net.log build.clean.log build.mrproper.log
+# If no log is provided, it will scan common logs under outdir depending on kind:
+#   kind=all (default): build.kernel.log build.headers.log build.selftests.net.log build.selftests.bpf.log build.clean.log build.mrproper.log
+#   kind=net         : build.kernel.log build.headers.log build.selftests.net.log build.clean.log build.mrproper.log
+#   kind=bpf         : build.kernel.log build.headers.log build.selftests.bpf.log build.clean.log build.mrproper.log
 
 set -eu
 
 usage() {
   cat <<USAGE >&2
-usage: $0 [-e] [-w] [-s] [-n N] [-l] [-r linux_root] [-o outdir] [-I] [log1 ...]
+usage: $0 [-e] [-w] [-s] [-n N] [-l] [-r linux_root] [-o outdir] [-I] [-k kind] [log1 ...]
 USAGE
   exit 1
 }
@@ -33,8 +35,9 @@ LLVM=0
 LINUX_ROOT=""
 O=""
 INCLUDE_FLOOD=0
+KIND="all"
 
-while getopts "ewsn:lr:o:Ih" opt; do
+while getopts "ewsn:lr:o:Ik:h" opt; do
   case "$opt" in
     e) SHOW_E=1 ;;
     w) SHOW_W=1 ;;
@@ -44,6 +47,7 @@ while getopts "ewsn:lr:o:Ih" opt; do
     r) LINUX_ROOT="$OPTARG" ;;
     o) O="$OPTARG" ;;
     I) INCLUDE_FLOOD=1 ;;
+    k) KIND="$OPTARG" ;;
     h|*) usage ;;
   esac
 done
@@ -184,13 +188,22 @@ if [ $# -ge 1 ]; then
 fi
 
 echo "[scan] auto mode: O=$O" >&2
-for base in \
-  build.kernel.log \
-  build.headers.log \
-  build.selftests.net.log \
-  build.selftests.bpf.log \
-  build.clean.log \
-  build.mrproper.log
-do
+case "$KIND" in
+  net)
+    logs="build.kernel.log build.headers.log build.selftests.net.log build.clean.log build.mrproper.log"
+    ;;
+  bpf)
+    logs="build.kernel.log build.headers.log build.selftests.bpf.log build.clean.log build.mrproper.log"
+    ;;
+  all|"")
+    logs="build.kernel.log build.headers.log build.selftests.net.log build.selftests.bpf.log build.clean.log build.mrproper.log"
+    ;;
+  *)
+    echo "ERROR: unknown kind '$KIND' (expected: net|bpf|all)" >&2
+    exit 2
+    ;;
+esac
+
+for base in $logs; do
   scan_one "$O/$base"
 done
