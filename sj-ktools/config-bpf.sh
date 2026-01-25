@@ -3,21 +3,29 @@ set -eu
 
 usage() {
   cat <<USAGE
-usage: $0 [-l] [-r linux_root] [-o outdir]
-  -l            use LLVM/clang output default (../out/full-clang)
+usage: $0 [-l|-g] [-c] [-m] [-r linux_root] [-o outdir]
+  -l            use LLVM/clang (default)
+  -g            use gcc
+  -c            wipe O= (rm -rf) before config
+  -m            mrproper in O= before config (forces re-config)
   -r linux_root kernel source tree root (default: pwd)
   -o outdir     explicit build output dir (O=)
 USAGE
   exit 1
 }
 
-LLVM=0
+LLVM=1
+CLEAN=0
+MRPROPER=0
 LINUX_ROOT=""
 O=""
 
-while getopts "lr:o:h" opt; do
+while getopts "lgr:o:cmh" opt; do
   case "$opt" in
     l) LLVM=1 ;;
+    g) LLVM=0 ;;
+    c) CLEAN=1 ;;
+    m) MRPROPER=1 ;;
     r) LINUX_ROOT="$OPTARG" ;;
     o) O="$OPTARG" ;;
     h|*) usage ;;
@@ -44,6 +52,18 @@ fi
 
 mkdir -p "$O"
 cd "$HOST_LINUX_ROOT"
+
+# ---- optional clean/mrproper before writing .config ----
+if [ "$CLEAN" -eq 1 ]; then
+  echo "[cfg] -c: wipe O=$O" >&2
+  rm -rf "$O"
+  mkdir -p "$O"
+fi
+
+if [ "$MRPROPER" -eq 1 ]; then
+  echo "[cfg] -m: make mrproper (O=$O)" >&2
+  make -C "$HOST_LINUX_ROOT" O="$O" mrproper
+fi
 
 [ -x ./scripts/config ] || {
   echo "ERROR: scripts/config not found or not executable (are you in kernel tree?)" >&2
@@ -145,6 +165,9 @@ cfg -e BPF_JIT           || true
 cfg -e BPF_JIT_ALWAYS_ON || true
 cfg -e BPF_EVENTS        || true
 
+cfg --enable NET_SCH_BPF || true
+cfg --set-val NET_SCH_BPF y
+
 # verifier / tracing helpers (常见依赖，失败也无所谓)
 cfg -e KPROBES    || true
 cfg -e KRETPROBES || true
@@ -161,6 +184,48 @@ cfg -e DEBUG_INFO_BTF    || true
 cfg -e BPF_FS || true
 cfg -e DEBUG_FS || true
 
-make O="$O" olddefconfig
-echo "[cfg] OK: wrote $O/.config (olddefconfig done)"
+# ---- merge upstream bpf selftests config fragment (maximize coverage) ----
+FRAG="$HOST_LINUX_ROOT/tools/testing/selftests/bpf/config"
+if [ -r "$FRAG" ] && [ -x "$HOST_LINUX_ROOT/scripts/kconfig/merge_config.sh" ]; then
+  echo "[cfg] merge fragment: $FRAG"
+  KCONFIG_CONFIG="$O/.config" \
+    "$HOST_LINUX_ROOT/scripts/kconfig/merge_config.sh" -m -r \
+    "$O/.config" "$FRAG" >/dev/null
+else
+  echo "[cfg][warn] skip merge fragment (missing $FRAG or merge_config.sh)" >&2
+fi
 
+# require pahole >= v1.31 (from PATH)
+need_pahole=131
+
+pahole_num() {
+  pahole --version 2>/dev/null | head -n1 \
+    | sed -n 's/^v\([0-9]\+\)\.\([0-9]\+\).*$/\1\2/p'
+}
+
+p="$(command -v pahole 2>/dev/null || true)"
+[ -z "$p" ] && echo "[err] pahole not found in PATH (need >= v1.31)" >&2 && exit 2
+
+pv="$(pahole_num)"
+case "$pv" in
+  ''|*[!0-9]*) echo "[err] cannot parse pahole version: $(pahole --version 2>/dev/null | head -n1)" >&2; exit 2 ;;
+esac
+
+if [ "$pv" -lt "$need_pahole" ]; then
+  echo "[err] pahole too old: $p ($(pahole --version | head -n1)), need >= v1.31" >&2
+  echo "[hint] run with PATH=/usr/local/bin:\$PATH ..." >&2
+  exit 2
+fi
+
+echo "[cfg] pahole=$p ver=$(pahole --version | head -n1)" >&2
+
+if [ "$LLVM" -eq 1 ]; then
+  cfg -d LTO_CLANG_FULL || true
+  cfg -d LTO_CLANG_THIN || true
+  cfg -e LTO_NONE       || true
+fi
+
+export KCONFIG_NONINTERACTIVE=1
+KCONFIG_CONFIG="$O/.config" \
+  make -C "$HOST_LINUX_ROOT" O="$O" olddefconfig </dev/null
+echo "[cfg] OK: wrote $O/.config (olddefconfig done)"

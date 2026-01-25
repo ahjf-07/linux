@@ -206,5 +206,35 @@ cfg -e BONDING || true
 # virtme-ng overlays need overlayfs
 cfg -e OVERLAY_FS
 
+# require pahole >= v1.31 (from PATH) 
+need_pahole=131
+
+pahole_num() {
+  pahole --version 2>/dev/null | head -n1 \
+    | sed -n 's/^v\([0-9]\+\)\.\([0-9]\+\).*$/\1\2/p'
+}
+
+p="$(command -v pahole 2>/dev/null || true)"
+[ -z "$p" ] && echo "[err] pahole not found in PATH (need >= v1.31)" >&2 && exit 2
+
+pv="$(pahole_num)"
+case "$pv" in
+  ''|*[!0-9]*) echo "[err] cannot parse pahole version: $(pahole --version 2>/dev/null | head -n1)" >&2; exit 2 ;;
+esac
+
+if [ "$pv" -lt "$need_pahole" ]; then
+  echo "[err] pahole too old: $p ($(pahole --version | head -n1)), need >= v1.31" >&2
+  echo "[hint] run with PATH=/usr/local/bin:\$PATH ..." >&2
+  exit 2
+fi
+
+echo "[cfg] pahole=$p ver=$(pahole --version | head -n1)" >&2
+
+if [ "$LLVM" -eq 1 ]; then
+  cfg --disable LTO_CLANG_FULL || true
+  cfg --disable LTO_CLANG_THIN || true
+  cfg --enable  LTO_NONE       || true
+fi
+
 make O="$O" olddefconfig
 echo "[cfg] OK: wrote $O/.config (olddefconfig done)"

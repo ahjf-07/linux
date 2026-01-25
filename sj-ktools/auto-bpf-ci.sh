@@ -12,10 +12,11 @@ Defaults:
   switch : master (fast-forward only)
 
 Options:
-  -l  LLVM=1 (clang). default gcc
+  -l  LLVM=1 (clang). default clang
+  -g  LLVM=0 (gcc)
   -s  enable sparse (passed to build-bpf.sh)
   -S  sparse subtrees list (passed to build-bpf.sh)
-  -o  outdir (default: ../out/full-{clang|gcc})
+  -o  outdir (default: ../out/full-clang)
   -t  tracked ref (default: upstream/master)
   -e  recipient (or env AUTO_EMAIL)
 
@@ -56,7 +57,7 @@ need_exec scan-nb.sh
 need_exec run-bpf.sh
 need_exec summ-bpf.sh
 
-LLVM=0
+LLVM=1
 SPARSE=0
 SPARSE_SUBTREES=""
 O=""
@@ -93,9 +94,10 @@ while [ $# -gt 0 ]; do
 done
 set -- $_keep "$@"
 
-while getopts "lsS:o:t:e:cmNFfh" opt; do
+while getopts "lgsS:o:t:e:cmNFfh" opt; do
   case "$opt" in
     l) LLVM=1 ;;
+    g) LLVM=0 ;;
     s) SPARSE=1 ;;
     S) SPARSE_SUBTREES="$OPTARG" ;;
     o) O="$OPTARG" ;;
@@ -140,7 +142,7 @@ now="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_DIR="$RUNS_DIR/$now"
 mkdir -p "$RUN_DIR"
 
-run() { echo "+ $*" >&2; bash -lc "$*"; }
+run() { echo "+ $*" >&2; bash -lc "set -o pipefail; $*"; }
 
 if echo "$TARGET_REF" | grep -q '/'; then
   FETCH_REMOTE="${TARGET_REF%%/*}"
@@ -199,7 +201,7 @@ fi
   git log -1 --oneline "$new_ref" || true
 } >"$RUN_DIR/meta.txt"
 
-if [ "$ref_updated" -eq 0 ] && [ "$FORCE" -eq 0 ]; then
+if [ "$ref_updated" -eq 0 ] && [ "$FORCE" -eq 0 ] && [ "$CLEAN" -eq 0 ] && [ "$MRPROPER" -eq 0 ]; then
   SUBJ="[auto-bpf][$KEY] no updates: $TARGET_REF still $new_ref"
   MAIL="$RUN_DIR/mail.no-updates.mbox"
   {
@@ -229,6 +231,7 @@ fi
 if [ "$CLEAN" -eq 1 ]; then
   echo "[auto] CLEAN=1: wiping O=$O" >&2
   rm -rf "$O"
+  rm -rf "$LINUX_ROOT/.kselftest-out/selftests-bpf" 2>/dev/null || true
   mkdir -p "$O"
 fi
 if [ "$MRPROPER" -eq 1 ]; then
@@ -282,14 +285,22 @@ fi
 if [ "$NO_BUILD" -eq 0 ]; then
   if [ ! -f "$O/.config" ]; then
     cargs=""
-    [ "$LLVM" -eq 1 ] && cargs="$cargs -l"
+    [ "$LLVM" -eq 1 ] && cargs="$cargs -l" || cargs="$cargs -g"
+    [ "$CLEAN" -eq 1 ] && cargs="$cargs -c"
+    [ "$MRPROPER" -eq 1 ] && cargs="$cargs -m"
     run "\"$TOOL_DIR/config-bpf.sh\" $cargs -r \"$LINUX_ROOT\" -o \"$O\" |& tee \"$RUN_DIR/config.log\""
   fi
 
   bargs=""
-  [ "$LLVM" -eq 1 ] && bargs="$bargs -l"
+  [ "$LLVM" -eq 1 ] && bargs="$bargs -l" || bargs="$bargs"   # build 没 -g 就不传
   [ "$SPARSE" -eq 1 ] && bargs="$bargs -s"
   [ -n "$SPARSE_SUBTREES" ] && bargs="$bargs -S \"$SPARSE_SUBTREES\""
+# build-bpf.sh: -c/-m 互斥；-m 在 auto 里已经做了 rm -rf O + rm -f O/.config + 重新 config
+if [ "$MRPROPER" -eq 1 ]; then
+  :  # do not pass -c/-m to build-bpf.sh
+elif [ "$CLEAN" -eq 1 ]; then
+  bargs="$bargs -c"
+fi
   bargs="$bargs -r \"$LINUX_ROOT\" -o \"$O\""
   run "\"$TOOL_DIR/build-bpf.sh\" $bargs |& tee \"$RUN_DIR/build.all.log\""
 else

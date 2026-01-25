@@ -120,7 +120,7 @@ run_cmd() {
   return 0
 }
 
-cd "$ROOT/tools/testing/selftests/bpf" || exit 1
+cd "$ROOT/.kselftest-out/selftests-bpf" || exit 1
 ensure_mounts
 append_hdr
 

@@ -188,6 +188,7 @@ for base in \
   build.kernel.log \
   build.headers.log \
   build.selftests.net.log \
+  build.selftests.bpf.log \
   build.clean.log \
   build.mrproper.log
 do
