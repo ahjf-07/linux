@@ -342,6 +342,29 @@ fi
 
 run "\"$TOOL_DIR/scan-nb.sh\" -e -w -s -n 120 -k bpf -r \"$LINUX_ROOT\" -o \"$O\" >\"$RUN_DIR/scan.txt\" 2>&1 || true"
 
+WARN_LIST="$RUN_DIR/scan.warnings.txt"
+SPARSE_LIST="$RUN_DIR/scan.sparse.txt"
+awk '
+  function normalize(line) {
+    sub(/^[0-9]+:/, "", line);
+    gsub(/:[0-9]+(:[0-9]+)?:/, ":", line);
+    return line;
+  }
+  /^==== warnings \(first / { in=1; next }
+  /^====/ { if (in) in=0 }
+  in && /^[0-9]+:/ { print normalize($0) }
+' "$RUN_DIR/scan.txt" >"$WARN_LIST" 2>/dev/null || true
+awk '
+  function normalize(line) {
+    sub(/^[0-9]+:/, "", line);
+    gsub(/:[0-9]+(:[0-9]+)?:/, ":", line);
+    return line;
+  }
+  /^==== sparse diagnostics \(first / { in=1; next }
+  /^====/ { if (in) in=0 }
+  in && /^[0-9]+:/ { print normalize($0) }
+' "$RUN_DIR/scan.txt" >"$SPARSE_LIST" 2>/dev/null || true
+
 TEST_LOG_SRC="$LINUX_ROOT/.kselftest-out/bpf.selftests.log"
 TEST_LOG_DST="$RUN_DIR/bpf.selftests.log"
 TEST_JSON_SRC="$LINUX_ROOT/.kselftest-out/bpf-json"
@@ -389,8 +412,17 @@ essentials() {
     echo "## build + sparse (filtered)"
 
     awk '
+      function reset_counts() {
+        err=0; warn=0; sp=0;
+      }
       function flush_summary() {
-        if (sum != "") { printf "%s\n", sum; sum=""; }
+        if (sum != "") {
+          if ((err + warn + sp) > 0) {
+            printf "%s\n", sum;
+          }
+          sum="";
+        }
+        reset_counts();
       }
       function normalize_line(line) {
         sub(/^[0-9]+:/, "", line);
@@ -405,6 +437,7 @@ essentials() {
       BEGIN{
         sum=""; in_sum=0;
         sec=""; list="";
+        reset_counts();
       }
 
       /^==== build scan summary ====$/ {
@@ -418,13 +451,18 @@ essentials() {
 
       in_sum==1 {
         sum = sum $0 "\n";
+        if ($0 ~ /^errors_effective[[:space:]]*:/) { err=$NF + 0; }
+        else if ($0 ~ /^errors[[:space:]]*:/) { err=$NF + 0; }
+        else if ($0 ~ /^warnings[[:space:]]*:/) { warn=$NF + 0; }
+        else if ($0 ~ /^sparse_effective[[:space:]]*:/) { sp=$NF + 0; }
+        else if ($0 ~ /^sparse[[:space:]]*:/) { sp=$NF + 0; }
         if ($0 ~ /^$/) { in_sum=0; flush_summary(); }
         next
       }
 
       /^==== errors \(first /           { flush_list(sec, list); sec="errors"; list=""; next }
-      /^==== warnings \(first /         { flush_list(sec, list); sec="warnings"; list=""; next }
-      /^==== sparse diagnostics \(first /{ flush_list(sec, list); sec="sparse diagnostics"; list=""; next }
+      /^==== warnings \(first /         { flush_list(sec, list); sec=""; list=""; next }
+      /^==== sparse diagnostics \(first /{ flush_list(sec, list); sec=""; list=""; next }
       /^==== sparse diagnostics \(top messages\) ====$/ { flush_list(sec, list); sec=""; list=""; next }
 
       (sec!="") && ($0 ~ /^[0-9]+:/) { list = list normalize_line($0) "\n"; next }
@@ -434,6 +472,24 @@ essentials() {
         flush_summary();
       }
     ' "$scan" 2>/dev/null || true
+
+    if [ -f "$BASE_DIR/scan.warnings.txt" ] && [ -f "$WARN_LIST" ]; then
+      diff -u "$BASE_DIR/scan.warnings.txt" "$WARN_LIST" >"$RUN_DIR/diff.warnings.vs-baseline.txt" || true
+      if [ -s "$RUN_DIR/diff.warnings.vs-baseline.txt" ]; then
+        echo
+        echo "## warnings delta vs baseline"
+        sed -n '1,200p' "$RUN_DIR/diff.warnings.vs-baseline.txt" || true
+      fi
+    fi
+
+    if [ -f "$BASE_DIR/scan.sparse.txt" ] && [ -f "$SPARSE_LIST" ]; then
+      diff -u "$BASE_DIR/scan.sparse.txt" "$SPARSE_LIST" >"$RUN_DIR/diff.sparse.vs-baseline.txt" || true
+      if [ -s "$RUN_DIR/diff.sparse.vs-baseline.txt" ]; then
+        echo
+        echo "## sparse delta vs baseline"
+        sed -n '1,200p' "$RUN_DIR/diff.sparse.vs-baseline.txt" || true
+      fi
+    fi
 
     echo
     echo "## selftests (bpf)"
@@ -496,9 +552,13 @@ fi
 
 cp -f "$THIS_TXT" "$PREV_TXT"
 cp -f "$THIS_ESS" "$PREV_ESS"
+cp -f "$WARN_LIST" "$PREV_DIR/scan.warnings.txt" 2>/dev/null || true
+cp -f "$SPARSE_LIST" "$PREV_DIR/scan.sparse.txt" 2>/dev/null || true
 if [ "$RESET_BASELINE" -eq 1 ] || [ ! -f "$BASE_TXT" ]; then
   cp -f "$THIS_TXT" "$BASE_TXT"
   cp -f "$THIS_ESS" "$BASE_ESS"
+  cp -f "$WARN_LIST" "$BASE_DIR/scan.warnings.txt" 2>/dev/null || true
+  cp -f "$SPARSE_LIST" "$BASE_DIR/scan.sparse.txt" 2>/dev/null || true
 fi
 
 SUBJ="[auto-bpf][$KEY] run done: ref_updated=$ref_updated force=$FORCE HEAD=$head_after"

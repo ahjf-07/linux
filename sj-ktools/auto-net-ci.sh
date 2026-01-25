@@ -371,8 +371,17 @@ essentials() {
     # - non-empty errors/warnings/sparse lists
     # Drop: "top messages" and any empty section headers.
     awk '
+      function reset_counts() {
+        err=0; warn=0; sp=0;
+      }
       function flush_summary() {
-        if (sum != "") { printf "%s\n", sum; sum=""; }
+        if (sum != "") {
+          if ((err + warn + sp) > 0) {
+            printf "%s\n", sum;
+          }
+          sum="";
+        }
+        reset_counts();
       }
       function flush_list(title, list) {
         if (list != "") {
@@ -382,6 +391,7 @@ essentials() {
       BEGIN{
         sum=""; in_sum=0;
         sec=""; list="";
+        reset_counts();
       }
 
       /^==== build scan summary ====$/ {
@@ -395,6 +405,11 @@ essentials() {
 
       in_sum==1 {
         sum = sum $0 "\n";
+        if ($0 ~ /^errors_effective[[:space:]]*:/) { err=$NF + 0; }
+        else if ($0 ~ /^errors[[:space:]]*:/) { err=$NF + 0; }
+        else if ($0 ~ /^warnings[[:space:]]*:/) { warn=$NF + 0; }
+        else if ($0 ~ /^sparse_effective[[:space:]]*:/) { sp=$NF + 0; }
+        else if ($0 ~ /^sparse[[:space:]]*:/) { sp=$NF + 0; }
         # end of summary block: blank line
         if ($0 ~ /^$/) { in_sum=0; flush_summary(); }
         next
