@@ -5,7 +5,7 @@ usage() {
   cat >&2 <<'USAGE'
 usage: auto-net-ci.sh [-l] [-s] [-S "subtrees"] [-o outdir] [-t remote/branch] [-e to_email]
                       [-c] [-m] [-N] [-F]
-                      [--reset-baseline] [--force] [--no-test] [--no-build]
+                      [--reset-baseline] [--force] [--no-fetch] [--no-test] [--no-build]
 
 Defaults:
   track  : upstream/master
@@ -29,6 +29,7 @@ Options:
 Long:
   --full           force full net selftests (override default fast)
   --force          same as -F
+  --no-fetch       skip git fetch
   --no-test        skip vng tests
   --no-build       skip build
   --reset-baseline overwrite pinned baseline with this run
@@ -76,6 +77,7 @@ TO_EMAIL="${AUTO_EMAIL:-}"
 
 RESET_BASELINE=0
 FORCE=0
+NO_FETCH=0
 NO_TEST=0
 NO_BUILD=0
 
@@ -92,6 +94,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --reset-baseline) RESET_BASELINE=1 ;;
     --force) FORCE=1 ;;
+    --no-fetch) NO_FETCH=1 ;;
     --no-test) NO_TEST=1 ;;
     --no-build) NO_BUILD=1 ;;
     --ff) TEST_FFAST=1 ;;
@@ -161,8 +164,6 @@ else
   FETCH_REMOTE="upstream"
 fi
 
-if git remote get-url "$FETCH_REMOTE" >/dev/null 2>&1; then
-
 # --dry-run: only compute run-net args and exit (no fetch/build/scan/test)
 if [ "${DRY_RUN:-0}" -eq 1 ]; then
   targs=""
@@ -176,10 +177,16 @@ if [ "${DRY_RUN:-0}" -eq 1 ]; then
   echo "[dry-run] run-net args: $targs" >&2
   exit 0
 fi
-  run "git fetch --prune \"$FETCH_REMOTE\""
+
+if [ "$NO_FETCH" -eq 0 ]; then
+  if git remote get-url "$FETCH_REMOTE" >/dev/null 2>&1; then
+    run "git fetch --prune \"$FETCH_REMOTE\""
+  else
+    echo "WARN: remote '$FETCH_REMOTE' not found; falling back to 'git fetch --prune'." >&2
+    run "git fetch --prune"
+  fi
 else
-  echo "WARN: remote '$FETCH_REMOTE' not found; falling back to 'git fetch --prune'." >&2
-  run "git fetch --prune"
+  echo "[auto] --no-fetch: skip git fetch" >&2
 fi
 
 old_ref="$(cat "$STATE_DIR/last_ref.$KEY" 2>/dev/null || true)"
