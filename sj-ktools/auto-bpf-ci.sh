@@ -23,7 +23,7 @@ Options:
   -c  clean rebuild: remove $O (out dir) before build
   -m  mrproper-ish: remove $O and also remove $O/.config (forces re-config)
   -N  no-merge: skip git switch/ff-only merge, build current HEAD (dirty OK)
-  -F  force-run: run even if no update after fetch (same as --force)
+  -F  force-run: run even if no update after fetch; uses incremental build when possible
   -f  fast tests: run N subtests (default: 30)
   -P  vng guest cpus (passed to run-bpf.sh)
   -M  vng guest memory (passed to run-bpf.sh, e.g. 2G)
@@ -340,6 +340,9 @@ if [ "$MRPROPER" -eq 1 ]; then
   :  # do not pass -c/-m to build-bpf.sh
 elif [ "$CLEAN" -eq 1 ]; then
   bargs="$bargs -c"
+fi
+if [ "$FORCE" -eq 1 ] && [ "$ref_updated" -eq 0 ] && [ "$CLEAN" -eq 0 ] && [ "$MRPROPER" -eq 0 ]; then
+  bargs="$bargs -i"
 fi
   bargs="$bargs -r \"$LINUX_ROOT\" -o \"$O\""
   run "\"$TOOL_DIR/build-bpf.sh\" $bargs |& tee \"$RUN_DIR/build.all.log\""
