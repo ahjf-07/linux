@@ -220,6 +220,23 @@ else
   make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS olddefconfig 2>&1 | tee "$O/build.olddefconfig.log"
 fi
 
+if [ "$INCREMENTAL" -eq 1 ]; then
+  config_hash_file="$O/.config.hash"
+  config_hash=$(sha1sum "$O/.config" | awk '{print $1}')
+  prev_hash=$(cat "$config_hash_file" 2>/dev/null || true)
+  echo "$config_hash" > "$config_hash_file"
+  if [ "$config_hash" = "$prev_hash" ]; then
+    echo "[build] incremental mode: .config unchanged; touch config helpers to avoid make -q jitter" \
+      | tee "$O/build.config.touch.log"
+    for f in \
+      "$O/include/config/auto.conf" \
+      "$O/include/config/auto.conf.cmd" \
+      "$O/include/generated/autoconf.h"; do
+      [ -f "$f" ] && touch "$f"
+    done
+  fi
+fi
+
 case "$KARCH" in
   x86)   IMG_TGT="bzImage"; IMG_PATH="$O/arch/x86/boot/bzImage" ;;
   arm64) IMG_TGT="Image";  IMG_PATH="$O/arch/arm64/boot/Image" ;;

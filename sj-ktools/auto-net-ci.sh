@@ -184,7 +184,7 @@ PREV_BUILD_ALL="$PREV_DIR/build.all.log"
 RUN_BUILD_DIR="$RUN_DIR/build-logs"
 mkdir -p "$RUN_BUILD_DIR"
 
-run() { echo "+ $*" >&2; bash -lc "$*"; }
+run() { echo "+ $*" >&2; bash -lc "set -o pipefail; $*"; }
 
 # fetch only tracked remote
 if echo "$TARGET_REF" | grep -q '/'; then
