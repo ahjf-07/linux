@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+set -o pipefail
 
 usage() {
   cat >&2 <<'USAGE'

@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+set -o pipefail
 
 usage() {
   cat <<USAGE
@@ -207,6 +208,12 @@ KHDR="-isystem $(realpath "$O/usr/include")"
 
 OUT_BPF=$(realpath -m "$LINUX_ROOT/.kselftest-out/selftests-bpf")
 mkdir -p "$OUT_BPF"
+VMLINUX_H="$OUT_BPF/vmlinux.h"
+
+if [ -d "$OUT_BPF" ]; then
+  echo "[build] cleaning stale bpf headers to prevent BTF pollution"
+  find "$OUT_BPF" -name "vmlinux.h" -delete
+fi
 
 CLANG_ARG=""
 if [ "$LLVM" -eq 1 ]; then
@@ -227,6 +234,7 @@ if [ "$INCREMENTAL" -eq 1 ]; then
     O="$O" OUTPUT="$OUT_BPF" \
     KHDR_INCLUDES="$KHDR" \
     VMLINUX_BTF="$O/vmlinux" \
+    VMLINUX_H="$VMLINUX_H" \
     BPFTOOL="$OUT_BPF/tools/sbin/bpftool" \
     $CLANG_ARG \
     BPF_CFLAGS="$orig" \
@@ -237,6 +245,7 @@ if [ "$INCREMENTAL" -eq 1 ]; then
       O="$O" OUTPUT="$OUT_BPF" \
       KHDR_INCLUDES="$KHDR" \
       VMLINUX_BTF="$O/vmlinux" \
+      VMLINUX_H="$VMLINUX_H" \
       BPFTOOL="$OUT_BPF/tools/sbin/bpftool" \
       $CLANG_ARG \
       BPF_CFLAGS="$orig" \
@@ -247,6 +256,7 @@ else
     O="$O" OUTPUT="$OUT_BPF" \
     KHDR_INCLUDES="$KHDR" \
     VMLINUX_BTF="$O/vmlinux" \
+    VMLINUX_H="$VMLINUX_H" \
     BPFTOOL="$OUT_BPF/tools/sbin/bpftool" \
     $CLANG_ARG \
     BPF_CFLAGS="$orig" \
