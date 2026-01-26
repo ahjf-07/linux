@@ -3,13 +3,14 @@ set -eu
 
 usage() {
   cat <<USAGE
-usage: $0 [-l] [-s] [-S "path1 path2 ..."] [-c|-m] [-j N] [-r linux_root] [-o outdir]
+usage: $0 [-l] [-s] [-S "path1 path2 ..."] [-c|-m] [-i] [-j N] [-r linux_root] [-o outdir]
   -l : use LLVM/clang (LLVM=1)
   -s : run sparse (C=1) for selected subtrees ONLY (default set if -S not given)
   -S : subtree list for sparse (space-separated paths under linux root)
        e.g. -S "net net/netfilter kernel/bpf"
   -c : clean (make clean, keeps .config)
   -m : mrproper (make mrproper, removes .config)
+  -i : incremental (skip build steps if targets are up to date)
   -j : jobs (default: nproc)
   -r : kernel source tree root (default: pwd)
   -o : output dir (default: <linux_root>/../out/full-{gcc,clang})
@@ -22,17 +23,19 @@ SPARSE=0
 SPARSE_SUBTREES=""
 CLEAN=0
 MRPROPER=0
+INCREMENTAL=0
 JOBS=$(nproc)
 LINUX_ROOT=""
 O=""
 
-while getopts "lsS:cmj:r:o:h" opt; do
+while getopts "lsS:cmij:r:o:h" opt; do
   case "$opt" in
     l) LLVM=1 ;;
     s) SPARSE=1 ;;
     S) SPARSE_SUBTREES="$OPTARG" ;;
     c) CLEAN=1 ;;
     m) MRPROPER=1 ;;
+    i) INCREMENTAL=1 ;;
     j) JOBS="$OPTARG" ;;
     r) LINUX_ROOT="$OPTARG" ;;
     o) O="$OPTARG" ;;
@@ -68,7 +71,7 @@ O=$(realpath -m "$O")
 mkdir -p "$O"
 
 echo "[cfg] LINUX_ROOT=$LINUX_ROOT"
-echo "[cfg] O=$O LLVM=$LLVM SPARSE=$SPARSE CLEAN=$CLEAN MRPROPER=$MRPROPER JOBS=$JOBS ARCH=$ARCH (KARCH=$KARCH)"
+echo "[cfg] O=$O LLVM=$LLVM SPARSE=$SPARSE CLEAN=$CLEAN MRPROPER=$MRPROPER INCREMENTAL=$INCREMENTAL JOBS=$JOBS ARCH=$ARCH (KARCH=$KARCH)"
 
 # Full build args: NO sparse here by design.
 MAKE_FULL_ARGS=""
@@ -76,6 +79,22 @@ MAKE_FULL_ARGS=""
 
 # Sparse args: used only for subtree sparse runs.
 MAKE_SPARSE_ARGS="$MAKE_FULL_ARGS C=1 CHECK=sparse"
+
+make_q_check() {
+  local log=$1
+  shift
+  if "$@" -q >"$log" 2>&1; then
+    return 0
+  fi
+  local rc=$?
+  if [ "$rc" -eq 2 ]; then
+    echo "[build][error] make -q failed (see $log)" >&2
+    sed -n '1,120p' "$log" >&2
+    exit 2
+  fi
+  echo "[build] make -q reports not up to date (see $log)"
+  return 1
+}
 
 if [ "$MRPROPER" -eq 1 ]; then
   echo "[build] mrproper (will remove .config)"
@@ -103,11 +122,29 @@ case "$KARCH" in
 esac
 
 echo "[build] kernel ($IMG_TGT + modules)  (no sparse)"
-make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS -j"$JOBS" "$IMG_TGT" modules 2>&1 | tee "$O/build.kernel.log"
+if [ "$INCREMENTAL" -eq 1 ]; then
+  if make_q_check "$O/build.kernel.q.log" make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS "$IMG_TGT" modules; then
+    echo "[build] up to date: skip kernel build" | tee "$O/build.kernel.log"
+  else
+    make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS -j"$JOBS" "$IMG_TGT" modules 2>&1 | tee "$O/build.kernel.log"
+  fi
+else
+  make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS -j"$JOBS" "$IMG_TGT" modules 2>&1 | tee "$O/build.kernel.log"
+fi
 
 echo "[build] headers_install"
-make -C "$LINUX_ROOT" O="$O" headers_install \
-  INSTALL_HDR_PATH="$O/usr" 2>&1 | tee "$O/build.headers.log"
+if [ "$INCREMENTAL" -eq 1 ]; then
+  if make_q_check "$O/build.headers.q.log" make -C "$LINUX_ROOT" O="$O" \
+    headers_install INSTALL_HDR_PATH="$O/usr"; then
+    echo "[build] up to date: skip headers_install" | tee "$O/build.headers.log"
+  else
+    make -C "$LINUX_ROOT" O="$O" headers_install \
+      INSTALL_HDR_PATH="$O/usr" 2>&1 | tee "$O/build.headers.log"
+  fi
+else
+  make -C "$LINUX_ROOT" O="$O" headers_install \
+    INSTALL_HDR_PATH="$O/usr" 2>&1 | tee "$O/build.headers.log"
+fi
 
 KHDR="-isystem $(realpath "$O/usr/include")"
 
@@ -116,10 +153,25 @@ OUT_NET=$(realpath -m "$O/selftests-net")
 mkdir -p "$OUT_NET"
 
 echo "[build] selftests/net (OUTPUT=$OUT_NET)  (no sparse)"
-make -C "$LINUX_ROOT/tools/testing/selftests/net" \
-  OUTPUT="$OUT_NET" \
-  KHDR_INCLUDES="$KHDR" \
-  $MAKE_FULL_ARGS -j"$JOBS" 2>&1 | tee "$O/build.selftests.net.log"
+if [ "$INCREMENTAL" -eq 1 ]; then
+  if make_q_check "$O/build.selftests.net.q.log" \
+    make -C "$LINUX_ROOT/tools/testing/selftests/net" \
+    OUTPUT="$OUT_NET" \
+    KHDR_INCLUDES="$KHDR" \
+    $MAKE_FULL_ARGS; then
+    echo "[build] up to date: skip selftests/net" | tee "$O/build.selftests.net.log"
+  else
+    make -C "$LINUX_ROOT/tools/testing/selftests/net" \
+      OUTPUT="$OUT_NET" \
+      KHDR_INCLUDES="$KHDR" \
+      $MAKE_FULL_ARGS -j"$JOBS" 2>&1 | tee "$O/build.selftests.net.log"
+  fi
+else
+  make -C "$LINUX_ROOT/tools/testing/selftests/net" \
+    OUTPUT="$OUT_NET" \
+    KHDR_INCLUDES="$KHDR" \
+    $MAKE_FULL_ARGS -j"$JOBS" 2>&1 | tee "$O/build.selftests.net.log"
+fi
 
 # Sparse: subtree-only (do NOT mix into full build)
 if [ "$SPARSE" -eq 1 ]; then
