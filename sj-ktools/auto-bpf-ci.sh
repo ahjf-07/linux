@@ -390,6 +390,20 @@ if [ "$NO_BUILD" -eq 0 ]; then
       } >"$RUN_DIR/build.all.log"
     fi
   else
+    if [ "$force_incremental" -eq 1 ] && [ -d "$PREV_BUILD_DIR" ]; then
+      if [ -f "$O/build.olddefconfig.log" ] && grep -q "up to date: skip olddefconfig" "$O/build.olddefconfig.log"; then
+        [ -f "$PREV_BUILD_DIR/build.olddefconfig.log" ] && cp -f "$PREV_BUILD_DIR/build.olddefconfig.log" "$O/build.olddefconfig.log"
+      fi
+      if [ -f "$O/build.kernel.log" ] && grep -q "up to date: skip kernel build" "$O/build.kernel.log"; then
+        [ -f "$PREV_BUILD_DIR/build.kernel.log" ] && cp -f "$PREV_BUILD_DIR/build.kernel.log" "$O/build.kernel.log"
+      fi
+      if [ -f "$O/build.headers.log" ] && grep -q "up to date: skip headers_install" "$O/build.headers.log"; then
+        [ -f "$PREV_BUILD_DIR/build.headers.log" ] && cp -f "$PREV_BUILD_DIR/build.headers.log" "$O/build.headers.log"
+      fi
+      if [ -f "$O/build.selftests.bpf.log" ] && grep -q "up to date: skip selftests/bpf" "$O/build.selftests.bpf.log"; then
+        [ -f "$PREV_BUILD_DIR/build.selftests.bpf.log" ] && cp -f "$PREV_BUILD_DIR/build.selftests.bpf.log" "$O/build.selftests.bpf.log"
+      fi
+    fi
     mkdir -p "$PREV_BUILD_DIR"
     for log in $BUILD_LOGS; do
       [ -f "$O/$log" ] && cp -f "$O/$log" "$RUN_BUILD_DIR/$log"
