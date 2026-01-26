@@ -156,14 +156,20 @@ if [ "$INCREMENTAL" -eq 1 ]; then
   prev_hash=$(cat "$config_hash_file" 2>/dev/null || true)
   echo "$config_hash" > "$config_hash_file"
   if [ "$config_hash" = "$prev_hash" ]; then
-    echo "[build] incremental mode: .config unchanged; touch config helpers to avoid make -q jitter" \
+    echo "[build] incremental mode: protect config helpers to avoid make -q jitter" \
       | tee "$O/build.config.touch.log"
     for f in \
       "$O/include/config/auto.conf" \
       "$O/include/config/auto.conf.cmd" \
       "$O/include/generated/autoconf.h"; do
-      [ -f "$f" ] && touch "$f"
+      [ -f "$f" ] && touch -r "$O/.config" "$f"
     done
+    if [ -f "$O/include/generated/rustc_cfg" ]; then
+      touch -r "$O/.config" "$O/include/generated/rustc_cfg"
+    fi
+    if [ -f "$O/vmlinux" ] && [ -d "$O/scripts" ]; then
+      find "$O/scripts" -type f -exec touch -r "$O/vmlinux" {} + 2>/dev/null || true
+    fi
   fi
 fi
 
