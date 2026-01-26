@@ -4,12 +4,13 @@ set -eu
 usage() {
   cat >&2 <<'USAGE'
 usage: auto-bpf-ci.sh [-l] [-s] [-S "subtrees"] [-o outdir] [-t remote/branch] [-e to_email]
-                      [-c] [-m] [-N] [-F] [-f N] [-P cpus] [-M mem]
-                      [--ff] [--full] [--reset-baseline] [--force] [--no-fetch] [--no-test] [--no-build]
+                      [-c] [-m] [-F] [-U] [-f N] [-P cpus] [-M mem]
+                      [--ff] [--full] [--reset-baseline] [--force] [--update] [--no-test] [--no-build]
 
 Defaults:
   track  : upstream/master
   switch : master (fast-forward only)
+  update : off (build current HEAD)
 
 Options:
   -l  LLVM=1 (clang). default clang
@@ -22,8 +23,8 @@ Options:
 
   -c  clean rebuild: remove $O (out dir) before build
   -m  mrproper-ish: remove $O and also remove $O/.config (forces re-config)
-  -N  no-merge: skip git switch/ff-only merge, build current HEAD (dirty OK)
   -F  force-run: run even if no update after fetch; uses incremental build when possible
+  -U  update: fetch + switch master + pull --ff-only TARGET_REF
   -f  fast tests: run N subtests (default: 30)
   -P  vng guest cpus (passed to run-bpf.sh)
   -M  vng guest memory (passed to run-bpf.sh, e.g. 2G)
@@ -33,7 +34,7 @@ Long:
   --full           full test_progs run
   --json           enable test_progs json summary (default)
   --no-json        disable test_progs json summary
-  --no-fetch       skip git fetch
+  --update         same as -U
   --force          same as -F
   --no-test        skip vng tests
   --no-build       skip build
@@ -77,13 +78,12 @@ TO_EMAIL="${AUTO_EMAIL:-}"
 
 RESET_BASELINE=0
 FORCE=0
-NO_FETCH=0
 NO_TEST=0
 NO_BUILD=0
 
 CLEAN=0
 MRPROPER=0
-NO_MERGE=0
+UPDATE=0
 TEST_FAST=1
 TEST_FFAST=0
 DRY_RUN=0
@@ -97,7 +97,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --reset-baseline) RESET_BASELINE=1 ;;
     --force) FORCE=1 ;;
-    --no-fetch) NO_FETCH=1 ;;
+    --update) UPDATE=1 ;;
     --no-test) NO_TEST=1 ;;
     --no-build) NO_BUILD=1 ;;
     --ff) TEST_FFAST=1; TEST_FAST=0 ;;
@@ -115,7 +115,7 @@ while [ $# -gt 0 ]; do
 done
 set -- $_keep "$@"
 
-while getopts "lgsS:o:t:e:cmNFf:P:M:" opt; do
+while getopts "lgsS:o:t:e:cmFUf:P:M:" opt; do
   case "$opt" in
     l) LLVM=1 ;;
     g) LLVM=0 ;;
@@ -126,8 +126,8 @@ while getopts "lgsS:o:t:e:cmNFf:P:M:" opt; do
     e) TO_EMAIL="$OPTARG" ;;
     c) CLEAN=1 ;;
     m) MRPROPER=1 ;;
-    N) NO_MERGE=1 ;;
     F) FORCE=1 ;;
+    U) UPDATE=1 ;;
     f)
       TEST_FAST=1
       TEST_FFAST=0
@@ -200,11 +200,8 @@ mkdir -p "$RUN_BUILD_DIR"
 
 run() { echo "+ $*" >&2; bash -lc "set -o pipefail; $*"; }
 
-if echo "$TARGET_REF" | grep -q '/'; then
-  FETCH_REMOTE="${TARGET_REF%%/*}"
-else
-  FETCH_REMOTE="upstream"
-fi
+FETCH_REMOTE="upstream"
+TARGET_BRANCH="$SWITCH_BRANCH"
 
 if [ "${DRY_RUN:-0}" -eq 1 ]; then
   targs=""
@@ -223,7 +220,11 @@ if [ "${DRY_RUN:-0}" -eq 1 ]; then
   exit 0
 fi
 
-if [ "$NO_FETCH" -eq 0 ]; then
+if [ "$UPDATE" -eq 1 ]; then
+  if echo "$TARGET_REF" | grep -q '/'; then
+    FETCH_REMOTE="${TARGET_REF%%/*}"
+    TARGET_BRANCH="${TARGET_REF#*/}"
+  fi
   if git remote get-url "$FETCH_REMOTE" >/dev/null 2>&1; then
     run "git fetch --prune \"$FETCH_REMOTE\""
   else
@@ -231,14 +232,21 @@ if [ "$NO_FETCH" -eq 0 ]; then
     run "git fetch --prune"
   fi
 else
-  echo "[auto] --no-fetch: skip git fetch" >&2
+  echo "[auto] update skipped; building current HEAD" >&2
 fi
 
 old_ref="$(cat "$STATE_DIR/last_ref.$KEY" 2>/dev/null || true)"
-new_ref="$(git rev-parse "$TARGET_REF" 2>/dev/null || true)"
 head_before="$(git rev-parse HEAD)"
-
-[ -n "$new_ref" ] || { echo "ERROR: cannot resolve TARGET_REF=$TARGET_REF" >&2; exit 2; }
+if [ "$UPDATE" -eq 1 ]; then
+  new_ref="$(git rev-parse "$TARGET_REF" 2>/dev/null || true)"
+  [ -n "$new_ref" ] || { echo "ERROR: cannot resolve TARGET_REF=$TARGET_REF" >&2; exit 2; }
+else
+  new_ref="$head_before"
+fi
+REF_LABEL="$TARGET_REF"
+if [ "$UPDATE" -eq 0 ]; then
+  REF_LABEL="HEAD"
+fi
 
 ref_updated=0
 if [ -z "$old_ref" ] || [ "$new_ref" != "$old_ref" ]; then
@@ -246,7 +254,7 @@ if [ -z "$old_ref" ] || [ "$new_ref" != "$old_ref" ]; then
 fi
 force_incremental=0
 if [ "$FORCE" -eq 1 ] && [ "$CLEAN" -eq 0 ] && [ "$MRPROPER" -eq 0 ]; then
-  if [ "$ref_updated" -eq 0 ] || [ "$NO_FETCH" -eq 1 ]; then
+  if [ "$ref_updated" -eq 0 ] || [ "$UPDATE" -eq 0 ]; then
     force_incremental=1
   fi
 fi
@@ -263,7 +271,7 @@ fi
   echo "HEAD_BEFORE=$head_before"
   echo "FORCE=$FORCE"
   echo "FORCE_INCREMENTAL=$force_incremental"
-  echo "NO_MERGE=$NO_MERGE"
+  echo "UPDATE=$UPDATE"
   echo "CLEAN=$CLEAN"
   echo "MRPROPER=$MRPROPER"
   echo "NO_BUILD=$NO_BUILD"
@@ -277,7 +285,7 @@ fi
 } >"$RUN_DIR/meta.txt"
 
 if [ "$ref_updated" -eq 0 ] && [ "$FORCE" -eq 0 ] && [ "$CLEAN" -eq 0 ] && [ "$MRPROPER" -eq 0 ]; then
-  SUBJ="[auto-bpf][$KEY] no updates: $TARGET_REF still $new_ref"
+  SUBJ="[auto-bpf][$KEY] no updates: $REF_LABEL still $new_ref"
   MAIL="$RUN_DIR/mail.no-updates.mbox"
   {
     echo "From $(git rev-parse --short "$new_ref" 2>/dev/null || echo auto) Mon Sep 17 00:00:00 2001"
@@ -314,7 +322,7 @@ if [ "$MRPROPER" -eq 1 ]; then
   rm -f "$O/.config"
 fi
 
-if [ "$NO_MERGE" -eq 0 ]; then
+if [ "$UPDATE" -eq 1 ]; then
   git diff --quiet && git diff --cached --quiet || {
     SUBJ="[auto-bpf][$KEY] update/force but REFUSE switch: dirty tree"
     MAIL="$RUN_DIR/mail.dirty-tree.mbox"
@@ -325,7 +333,7 @@ if [ "$NO_MERGE" -eq 0 ]; then
       echo "Subject: $SUBJ"
       echo
       echo "Work tree dirty; refusing to switch/fast-forward."
-      echo "Use -N to skip merge, or stash/commit changes."
+      echo "Retry without -U/--update, or stash/commit changes."
       echo
       cat "$RUN_DIR/meta.txt" || true
     } >"$MAIL"
@@ -339,7 +347,7 @@ if [ "$NO_MERGE" -eq 0 ]; then
     run "git switch -c \"$SWITCH_BRANCH\""
   fi
 
-  if ! git merge --ff-only "$TARGET_REF" >/dev/null 2>&1; then
+  if ! git pull --ff-only "$FETCH_REMOTE" "$TARGET_BRANCH" >/dev/null 2>&1; then
     SUBJ="[auto-bpf][$KEY] update/force but FF-only failed: $SWITCH_BRANCH <- $TARGET_REF"
     MAIL="$RUN_DIR/mail.ff-failed.mbox"
     {
@@ -355,6 +363,9 @@ if [ "$NO_MERGE" -eq 0 ]; then
     run "git send-email --to \"$TO_EMAIL\" --confirm=never --no-chain-reply-to --suppress-cc=all \"$MAIL\""
     exit 2
   fi
+fi
+if [ "$UPDATE" -eq 0 ]; then
+  echo "NOTE: update disabled; building current HEAD" >>"$RUN_DIR/meta.txt"
 fi
 head_after="$(git rev-parse HEAD)"
 
