@@ -169,6 +169,12 @@ now="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_DIR="$RUNS_DIR/$now"
 mkdir -p "$RUN_DIR"
 
+BUILD_LOGS="build.olddefconfig.log build.kernel.log build.headers.log build.selftests.bpf.log build.clean.log build.mrproper.log"
+PREV_BUILD_DIR="$PREV_DIR/build-logs"
+PREV_BUILD_ALL="$PREV_DIR/build.all.log"
+RUN_BUILD_DIR="$RUN_DIR/build-logs"
+mkdir -p "$RUN_BUILD_DIR"
+
 run() { echo "+ $*" >&2; bash -lc "set -o pipefail; $*"; }
 
 if echo "$TARGET_REF" | grep -q '/'; then
@@ -357,6 +363,41 @@ else
   echo "[auto] --no-build: skip build" >"$RUN_DIR/build.all.log"
 fi
 
+incremental_skipped=0
+if [ "$NO_BUILD" -eq 0 ] && [ "$force_incremental" -eq 1 ]; then
+  if [ -f "$O/build.olddefconfig.log" ] && grep -q "up to date: skip olddefconfig" "$O/build.olddefconfig.log" \
+    && [ -f "$O/build.kernel.log" ] && grep -q "up to date: skip kernel build" "$O/build.kernel.log" \
+    && [ -f "$O/build.headers.log" ] && grep -q "up to date: skip headers_install" "$O/build.headers.log" \
+    && [ -f "$O/build.selftests.bpf.log" ] && grep -q "up to date: skip selftests/bpf" "$O/build.selftests.bpf.log"; then
+    incremental_skipped=1
+  fi
+fi
+
+if [ "$NO_BUILD" -eq 0 ]; then
+  if [ "$incremental_skipped" -eq 1 ] && [ -d "$PREV_BUILD_DIR" ]; then
+    echo "[auto] incremental build skipped; reusing previous build logs" >&2
+    for log in $BUILD_LOGS; do
+      if [ -f "$PREV_BUILD_DIR/$log" ]; then
+        cp -f "$PREV_BUILD_DIR/$log" "$O/$log"
+        cp -f "$PREV_BUILD_DIR/$log" "$RUN_BUILD_DIR/$log"
+      fi
+    done
+    if [ -f "$PREV_BUILD_ALL" ]; then
+      {
+        echo "[auto] incremental build skipped; reused $PREV_BUILD_ALL"
+        echo
+        cat "$PREV_BUILD_ALL"
+      } >"$RUN_DIR/build.all.log"
+    fi
+  else
+    mkdir -p "$PREV_BUILD_DIR"
+    for log in $BUILD_LOGS; do
+      [ -f "$O/$log" ] && cp -f "$O/$log" "$RUN_BUILD_DIR/$log"
+      [ -f "$O/$log" ] && cp -f "$O/$log" "$PREV_BUILD_DIR/$log"
+    done
+    [ -f "$RUN_DIR/build.all.log" ] && cp -f "$RUN_DIR/build.all.log" "$PREV_BUILD_ALL"
+  fi
+fi
 run "\"$TOOL_DIR/scan-nb.sh\" -e -w -s -n 120 -k bpf -r \"$LINUX_ROOT\" -o \"$O\" >\"$RUN_DIR/scan.txt\" 2>&1 || true"
 
 WARN_LIST="$RUN_DIR/scan.warnings.txt"
