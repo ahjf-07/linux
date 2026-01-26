@@ -85,6 +85,29 @@ echo "[cfg] LINUX_ROOT=$HOST_LINUX_ROOT"
 echo "[cfg] O=$O"
 echo "[cfg] base config: $base_cfg"
 
+# ---- LLVM toolchain guard (>= 20) ----
+if [ "$LLVM" -eq 1 ]; then
+  CLANG_VER="${CLANG_VER:-20}"
+  if [ "$CLANG_VER" -lt 20 ]; then
+    echo "ERROR: LLVM toolchain must be >= 20 (CLANG_VER=$CLANG_VER)" >&2
+    exit 2
+  fi
+  if [ -n "${CC:-}" ]; then
+    _cc_ver=$(echo "$CC" | sed -n 's/.*clang-*\([0-9][0-9]*\)$/\1/p')
+    if [ -z "$_cc_ver" ] || [ "$_cc_ver" -lt 20 ]; then
+      echo "ERROR: CC must be clang-20+ (got: $CC)" >&2
+      exit 2
+    fi
+  fi
+  if [ -n "${LD:-}" ]; then
+    _lld_ver=$(echo "$LD" | sed -n 's/.*ld.lld-*\([0-9][0-9]*\)$/\1/p')
+    if [ -z "$_lld_ver" ] || [ "$_lld_ver" -lt 20 ]; then
+      echo "ERROR: LD must be ld.lld-20+ (got: $LD)" >&2
+      exit 2
+    fi
+  fi
+fi
+
 TMP_CFG="$O/.config.tmp"
 if [ "$base_cfg" = "/proc/config.gz" ]; then
   zcat "$base_cfg" > "$TMP_CFG"
