@@ -66,27 +66,15 @@ echo "[cfg] LINUX_ROOT=$HOST_LINUX_ROOT"
 echo "[cfg] O=$O"
 echo "[cfg] base config: $base_cfg"
 
-# ---- LLVM toolchain guard (>= 20) ----
+# ---- LLVM toolchain selection (static clang-20) ----
 if [ "$LLVM" -eq 1 ]; then
-  CLANG_VER="${CLANG_VER:-20}"
-  if [ "$CLANG_VER" -lt 20 ]; then
-    echo "ERROR: LLVM toolchain must be >= 20 (CLANG_VER=$CLANG_VER)" >&2
-    exit 2
-  fi
-  if [ -n "${CC:-}" ]; then
-    _cc_ver=$(echo "$CC" | sed -n 's/.*clang-*\([0-9][0-9]*\)$/\1/p')
-    if [ -z "$_cc_ver" ] || [ "$_cc_ver" -lt 20 ]; then
-      echo "ERROR: CC must be clang-20+ (got: $CC)" >&2
-      exit 2
-    fi
-  fi
-  if [ -n "${LD:-}" ]; then
-    _lld_ver=$(echo "$LD" | sed -n 's/.*ld.lld-*\([0-9][0-9]*\)$/\1/p')
-    if [ -z "$_lld_ver" ] || [ "$_lld_ver" -lt 20 ]; then
-      echo "ERROR: LD must be ld.lld-20+ (got: $LD)" >&2
-      exit 2
-    fi
-  fi
+  # 严禁使用动态探测，直接对齐 auto.conf.cmd 的要求
+  export LLVM=1
+  export CC="/usr/bin/clang-20"
+  export LD="/usr/bin/ld.lld-20"
+  export NM="/usr/bin/llvm-nm-20"
+  export AR="/usr/bin/llvm-ar-20"
+  export OBJCOPY="/usr/bin/llvm-objcopy-20"
 fi
 
 TMP_CFG="$O/.config.tmp"

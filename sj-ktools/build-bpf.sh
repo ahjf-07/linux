@@ -74,104 +74,34 @@ echo "[cfg] O=$O LLVM=$LLVM SPARSE=$SPARSE CLEAN=$CLEAN MRPROPER=$MRPROPER INCRE
 
 MAKE_FULL_ARGS=""
 
-# ---- toolchain selection (prefer llvm/clang-20) + non-interactive Kconfig ----
+# ---- toolchain selection (static llvm/clang-20) + non-interactive Kconfig ----
 export KCONFIG_NONINTERACTIVE=1
 
-pick_llvm_tool() {
-  # usage: pick_llvm_tool base [ver]
-  _base="$1"
-  _ver="${2:-20}"
-  if command -v "${_base}-${_ver}" >/dev/null 2>&1; then
-    echo "${_base}-${_ver}"
-  elif command -v "${_base}${_ver}" >/dev/null 2>&1; then
-    echo "${_base}${_ver}"
-  else
-    echo ""
-  fi
-}
-
-resolve_tool_path() {
-  _tool="$1"
-  if [ -z "$_tool" ]; then
-    echo ""
-    return
-  fi
-  case "$_tool" in
-    */*) echo "$_tool" ;;
-    *) command -v "$_tool" 2>/dev/null || echo "$_tool" ;;
-  esac
-}
-
 if [ "$LLVM" -eq 1 ]; then
-  CLANG_VER="${CLANG_VER:-20}"
-  if [ "$CLANG_VER" -lt 20 ]; then
-    echo "ERROR: LLVM toolchain must be >= 20 (CLANG_VER=$CLANG_VER)" >&2
-    exit 2
-  fi
+  # 严禁使用动态探测，直接对齐 auto.conf.cmd 的要求
+  export LLVM=1
+  export CC="/usr/bin/clang-20"
+  export LD="/usr/bin/ld.lld-20"
+  export NM="/usr/bin/llvm-nm-20"
+  export AR="/usr/bin/llvm-ar-20"
+  export OBJCOPY="/usr/bin/llvm-objcopy-20"
 
-  CC_BIN="${CC_BIN:-${CC:-}}"
-  LLD_BIN="${LLD_BIN:-${LD:-}}"
-  if [ -n "$CC_BIN" ]; then
-    _cc_ver=$(echo "$CC_BIN" | sed -n 's/.*clang-*\([0-9][0-9]*\)$/\1/p')
-    if [ -z "$_cc_ver" ] || [ "$_cc_ver" -lt 20 ]; then
-      echo "ERROR: CC must be clang-20+ (got: $CC_BIN)" >&2
-      exit 2
-    fi
-  fi
-  if [ -n "$LLD_BIN" ]; then
-    _lld_ver=$(echo "$LLD_BIN" | sed -n 's/.*ld.lld-*\([0-9][0-9]*\)$/\1/p')
-    if [ -z "$_lld_ver" ] || [ "$_lld_ver" -lt 20 ]; then
-      echo "ERROR: LD must be ld.lld-20+ (got: $LLD_BIN)" >&2
-      exit 2
-    fi
-  fi
-
-  AR_BIN="${AR_BIN:-${AR:-}}"
-  NM_BIN="${NM_BIN:-${NM:-}}"
-  OBJCOPY_BIN="${OBJCOPY_BIN:-${OBJCOPY:-}}"
-  OBJDUMP_BIN="${OBJDUMP_BIN:-${OBJDUMP:-}}"
-  STRIP_BIN="${STRIP_BIN:-${STRIP:-}}"
-  READELF_BIN="${READELF_BIN:-${READELF:-}}"
-
-  [ -n "$CC_BIN" ] || CC_BIN="$(pick_llvm_tool clang "$CLANG_VER")"
-  [ -n "$LLD_BIN" ] || LLD_BIN="$(pick_llvm_tool ld.lld "$CLANG_VER")"
-  [ -n "$AR_BIN" ] || AR_BIN="$(pick_llvm_tool llvm-ar "$CLANG_VER")"
-  [ -n "$NM_BIN" ] || NM_BIN="$(pick_llvm_tool llvm-nm "$CLANG_VER")"
-  [ -n "$OBJCOPY_BIN" ] || OBJCOPY_BIN="$(pick_llvm_tool llvm-objcopy "$CLANG_VER")"
-  [ -n "$OBJDUMP_BIN" ] || OBJDUMP_BIN="$(pick_llvm_tool llvm-objdump "$CLANG_VER")"
-  [ -n "$STRIP_BIN" ] || STRIP_BIN="$(pick_llvm_tool llvm-strip "$CLANG_VER")"
-  [ -n "$READELF_BIN" ] || READELF_BIN="$(pick_llvm_tool llvm-readelf "$CLANG_VER")"
-
-  CC_BIN="$(resolve_tool_path "$CC_BIN")"
-  LLD_BIN="$(resolve_tool_path "$LLD_BIN")"
-  AR_BIN="$(resolve_tool_path "$AR_BIN")"
-  NM_BIN="$(resolve_tool_path "$NM_BIN")"
-  OBJCOPY_BIN="$(resolve_tool_path "$OBJCOPY_BIN")"
-  OBJDUMP_BIN="$(resolve_tool_path "$OBJDUMP_BIN")"
-  STRIP_BIN="$(resolve_tool_path "$STRIP_BIN")"
-  READELF_BIN="$(resolve_tool_path "$READELF_BIN")"
+  CC_BIN="$CC"
+  LLD_BIN="$LD"
+  AR_BIN="$AR"
+  NM_BIN="$NM"
+  OBJCOPY_BIN="$OBJCOPY"
 
   # host tools：默认用 gcc，避免 host link/PIE/环境差异；你要 host clang 自己 export HOSTCC=clang-20
   HOSTCC_BIN="${HOSTCC:-gcc}"
   HOSTCXX_BIN="${HOSTCXX:-g++}"
 
-  [ -n "$CC_BIN" ] || { echo "ERROR: clang not found (wanted clang-$CLANG_VER)" >&2; exit 2; }
-  [ -n "$LLD_BIN" ] || { echo "ERROR: ld.lld not found (wanted ld.lld-$CLANG_VER)" >&2; exit 2; }
-  [ -n "$AR_BIN" ] || { echo "ERROR: llvm-ar not found (wanted llvm-ar-$CLANG_VER)" >&2; exit 2; }
-
-  echo "[tc] LLVM=1 prefer clang-$CLANG_VER"
-  echo "[tc] CC=$CC_BIN LD=$LLD_BIN AR=$AR_BIN NM=${NM_BIN:-<auto>}"
+  echo "[tc] LLVM=1 prefer clang-20 (static paths)"
+  echo "[tc] CC=$CC_BIN LD=$LLD_BIN AR=$AR_BIN NM=$NM_BIN"
   echo "[tc] HOSTCC=$HOSTCC_BIN HOSTCXX=$HOSTCXX_BIN"
 
   MAKE_FULL_ARGS="$MAKE_FULL_ARGS LLVM=1 LLVM_IAS=1"
-  MAKE_FULL_ARGS="$MAKE_FULL_ARGS CC=$CC_BIN LD=$LLD_BIN"
-  MAKE_FULL_ARGS="$MAKE_FULL_ARGS AR=$AR_BIN"
-  [ -n "$NM_BIN" ] && MAKE_FULL_ARGS="$MAKE_FULL_ARGS NM=$NM_BIN"
-  [ -n "$OBJCOPY_BIN" ] && MAKE_FULL_ARGS="$MAKE_FULL_ARGS OBJCOPY=$OBJCOPY_BIN"
-  [ -n "$OBJDUMP_BIN" ] && MAKE_FULL_ARGS="$MAKE_FULL_ARGS OBJDUMP=$OBJDUMP_BIN"
-  [ -n "$STRIP_BIN" ] && MAKE_FULL_ARGS="$MAKE_FULL_ARGS STRIP=$STRIP_BIN"
-  [ -n "$READELF_BIN" ] && MAKE_FULL_ARGS="$MAKE_FULL_ARGS READELF=$READELF_BIN"
-
+  MAKE_FULL_ARGS="$MAKE_FULL_ARGS CC=$CC_BIN LD=$LLD_BIN NM=$NM_BIN AR=$AR_BIN OBJCOPY=$OBJCOPY_BIN"
   MAKE_FULL_ARGS="$MAKE_FULL_ARGS HOSTCC=$HOSTCC_BIN HOSTCXX=$HOSTCXX_BIN"
 else
   # gcc path
