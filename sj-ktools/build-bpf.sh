@@ -85,24 +85,71 @@ pick_llvm_tool() {
     echo "${_base}-${_ver}"
   elif command -v "${_base}${_ver}" >/dev/null 2>&1; then
     echo "${_base}${_ver}"
-  elif command -v "${_base}" >/dev/null 2>&1; then
-    echo "${_base}"
   else
     echo ""
   fi
 }
 
+resolve_tool_path() {
+  _tool="$1"
+  if [ -z "$_tool" ]; then
+    echo ""
+    return
+  fi
+  case "$_tool" in
+    */*) echo "$_tool" ;;
+    *) command -v "$_tool" 2>/dev/null || echo "$_tool" ;;
+  esac
+}
+
 if [ "$LLVM" -eq 1 ]; then
   CLANG_VER="${CLANG_VER:-20}"
+  if [ "$CLANG_VER" -lt 20 ]; then
+    echo "ERROR: LLVM toolchain must be >= 20 (CLANG_VER=$CLANG_VER)" >&2
+    exit 2
+  fi
 
-  CC_BIN="$(pick_llvm_tool clang "$CLANG_VER")"
-  LLD_BIN="$(pick_llvm_tool ld.lld "$CLANG_VER")"
-  AR_BIN="$(pick_llvm_tool llvm-ar "$CLANG_VER")"
-  NM_BIN="$(pick_llvm_tool llvm-nm "$CLANG_VER")"
-  OBJCOPY_BIN="$(pick_llvm_tool llvm-objcopy "$CLANG_VER")"
-  OBJDUMP_BIN="$(pick_llvm_tool llvm-objdump "$CLANG_VER")"
-  STRIP_BIN="$(pick_llvm_tool llvm-strip "$CLANG_VER")"
-  READELF_BIN="$(pick_llvm_tool llvm-readelf "$CLANG_VER")"
+  CC_BIN="${CC_BIN:-${CC:-}}"
+  LLD_BIN="${LLD_BIN:-${LD:-}}"
+  if [ -n "$CC_BIN" ]; then
+    _cc_ver=$(echo "$CC_BIN" | sed -n 's/.*clang-*\([0-9][0-9]*\)$/\1/p')
+    if [ -z "$_cc_ver" ] || [ "$_cc_ver" -lt 20 ]; then
+      echo "ERROR: CC must be clang-20+ (got: $CC_BIN)" >&2
+      exit 2
+    fi
+  fi
+  if [ -n "$LLD_BIN" ]; then
+    _lld_ver=$(echo "$LLD_BIN" | sed -n 's/.*ld.lld-*\([0-9][0-9]*\)$/\1/p')
+    if [ -z "$_lld_ver" ] || [ "$_lld_ver" -lt 20 ]; then
+      echo "ERROR: LD must be ld.lld-20+ (got: $LLD_BIN)" >&2
+      exit 2
+    fi
+  fi
+
+  AR_BIN="${AR_BIN:-${AR:-}}"
+  NM_BIN="${NM_BIN:-${NM:-}}"
+  OBJCOPY_BIN="${OBJCOPY_BIN:-${OBJCOPY:-}}"
+  OBJDUMP_BIN="${OBJDUMP_BIN:-${OBJDUMP:-}}"
+  STRIP_BIN="${STRIP_BIN:-${STRIP:-}}"
+  READELF_BIN="${READELF_BIN:-${READELF:-}}"
+
+  [ -n "$CC_BIN" ] || CC_BIN="$(pick_llvm_tool clang "$CLANG_VER")"
+  [ -n "$LLD_BIN" ] || LLD_BIN="$(pick_llvm_tool ld.lld "$CLANG_VER")"
+  [ -n "$AR_BIN" ] || AR_BIN="$(pick_llvm_tool llvm-ar "$CLANG_VER")"
+  [ -n "$NM_BIN" ] || NM_BIN="$(pick_llvm_tool llvm-nm "$CLANG_VER")"
+  [ -n "$OBJCOPY_BIN" ] || OBJCOPY_BIN="$(pick_llvm_tool llvm-objcopy "$CLANG_VER")"
+  [ -n "$OBJDUMP_BIN" ] || OBJDUMP_BIN="$(pick_llvm_tool llvm-objdump "$CLANG_VER")"
+  [ -n "$STRIP_BIN" ] || STRIP_BIN="$(pick_llvm_tool llvm-strip "$CLANG_VER")"
+  [ -n "$READELF_BIN" ] || READELF_BIN="$(pick_llvm_tool llvm-readelf "$CLANG_VER")"
+
+  CC_BIN="$(resolve_tool_path "$CC_BIN")"
+  LLD_BIN="$(resolve_tool_path "$LLD_BIN")"
+  AR_BIN="$(resolve_tool_path "$AR_BIN")"
+  NM_BIN="$(resolve_tool_path "$NM_BIN")"
+  OBJCOPY_BIN="$(resolve_tool_path "$OBJCOPY_BIN")"
+  OBJDUMP_BIN="$(resolve_tool_path "$OBJDUMP_BIN")"
+  STRIP_BIN="$(resolve_tool_path "$STRIP_BIN")"
+  READELF_BIN="$(resolve_tool_path "$READELF_BIN")"
 
   # host tools：默认用 gcc，避免 host link/PIE/环境差异；你要 host clang 自己 export HOSTCC=clang-20
   HOSTCC_BIN="${HOSTCC:-gcc}"
