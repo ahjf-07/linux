@@ -166,14 +166,10 @@ if [ ! -f "$O/.config" ]; then
   exit 1
 fi
 
-echo "[build] olddefconfig (non-interactive)"
-if [ "$INCREMENTAL" -eq 1 ]; then
-  if make_q_check "$O/build.olddefconfig.q.log" make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS olddefconfig; then
-    echo "[build] up to date: skip olddefconfig" | tee "$O/build.olddefconfig.log"
-  else
-    make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS olddefconfig 2>&1 | tee "$O/build.olddefconfig.log"
-  fi
+if [ "$INCREMENTAL" -eq 1 ] && [ -f "$O/.config" ]; then
+  echo "[build] incremental mode: skip olddefconfig to protect timestamps" | tee "$O/build.olddefconfig.log"
 else
+  echo "[build] olddefconfig (non-interactive)"
   make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS olddefconfig 2>&1 | tee "$O/build.olddefconfig.log"
 fi
 
