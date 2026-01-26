@@ -13,9 +13,46 @@ FAIL=$(grep -c '^\[FAIL\]' "$log" || true)
 SKIP=$(grep -c '^\[SKIP\]' "$log" || true)
 SKIP=$((SKIP + EXIT_SKIP))
 
+json_dir="$(dirname "$log")/bpf-json"
+json_files=$(ls "$json_dir"/*.json 2>/dev/null || true)
+JSON_FAILED=""
+if [ -n "$json_files" ] && command -v python3 >/dev/null 2>&1; then
+  JSON_FAILED=$(python3 - <<'PY' $json_files
+import json
+import sys
+
+totals = {"failed": 0}
+for path in sys.argv[1:]:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        continue
+    if isinstance(data.get("failed"), int):
+        totals["failed"] += data["failed"]
+
+print(totals["failed"])
+PY
+)
+fi
+if [ -n "$JSON_FAILED" ]; then
+  if [ "$JSON_FAILED" -eq 0 ]; then
+    PASS=1
+    FAIL=0
+  else
+    PASS=0
+    FAIL=1
+  fi
+fi
+
 echo "==== bpf kselftest summary ===="
-echo "PASS  : $PASS"
-echo "FAIL  : $FAIL"
+if [ -n "$JSON_FAILED" ]; then
+  echo "PASS  : $PASS (json failed=$JSON_FAILED)"
+  echo "FAIL  : $FAIL (json failed=$JSON_FAILED)"
+else
+  echo "PASS  : $PASS"
+  echo "FAIL  : $FAIL"
+fi
 echo "SKIP  : $SKIP"
 echo "EXIT  : $EXIT"
 
@@ -44,8 +81,6 @@ done
 
 echo
 echo "==== bpf test_progs summary (json) ===="
-json_dir="$(dirname "$log")/bpf-json"
-json_files=$(ls "$json_dir"/*.json 2>/dev/null || true)
 if [ -z "$json_files" ]; then
   echo "(no json summary files found under $json_dir)"
 elif command -v python3 >/dev/null 2>&1; then
@@ -84,7 +119,7 @@ print(f"success_subtest: {totals['success_subtest']}")
 print(f"skipped        : {totals['skipped']}")
 print(f"failed         : {totals['failed']}")
 
-def dump_top(title, counter, n=20):
+def dump_top(title, counter, n=50):
     print()
     print(title)
     if not counter:
@@ -93,8 +128,8 @@ def dump_top(title, counter, n=20):
     for name, count in counter.most_common(n):
         print(f"{count:4d}  {name}")
 
-dump_top("==== bpf failed tests (top 20) ====", fail_tests)
-dump_top("==== bpf failed subtests (top 20) ====", fail_subtests)
+dump_top("==== bpf failed tests (top 50) ====", fail_tests)
+dump_top("==== bpf failed subtests (top 50) ====", fail_subtests)
 PY
 else
   echo "(python3 not found; unable to parse json summaries)"

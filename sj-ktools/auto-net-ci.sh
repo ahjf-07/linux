@@ -372,6 +372,9 @@ fi
 if [ "$NO_BUILD" -eq 0 ]; then
   if [ "$incremental_skipped" -eq 1 ] && [ -d "$PREV_BUILD_DIR" ]; then
     echo "[auto] incremental build skipped; reusing previous build logs" >&2
+    if [ -f "$PREV_DIR/scan.txt" ]; then
+      cp -f "$PREV_DIR/scan.txt" "$RUN_DIR/scan.txt"
+    fi
     for log in $BUILD_LOGS; do
       if [ -f "$PREV_BUILD_DIR/$log" ]; then
         cp -f "$PREV_BUILD_DIR/$log" "$O/$log"
@@ -409,7 +412,11 @@ if [ "$NO_BUILD" -eq 0 ]; then
   fi
 fi
 
-run "\"$TOOL_DIR/scan-nb.sh\" -e -w -s -n 120 -k net -r \"$LINUX_ROOT\" -o \"$O\" >\"$RUN_DIR/scan.txt\" 2>&1 || true"
+if [ "$incremental_skipped" -eq 1 ] && [ -f "$RUN_DIR/scan.txt" ]; then
+  echo "[auto] incremental build skipped; reuse scan.txt" >&2
+else
+  run "\"$TOOL_DIR/scan-nb.sh\" -e -w -s -n 120 -k net -r \"$LINUX_ROOT\" -o \"$O\" >\"$RUN_DIR/scan.txt\" 2>&1 || true"
+fi
 
 # tests (方案A): read source-root .kselftest-out then copy to RUN_DIR
 TEST_LOG_SRC="$LINUX_ROOT/.kselftest-out/net.selftests.log"
@@ -577,6 +584,7 @@ fi
 
 cp -f "$THIS_TXT" "$PREV_TXT"
 cp -f "$THIS_ESS" "$PREV_ESS"
+cp -f "$RUN_DIR/scan.txt" "$PREV_DIR/scan.txt" 2>/dev/null || true
 if [ "$RESET_BASELINE" -eq 1 ] || [ ! -f "$BASE_TXT" ]; then
   cp -f "$THIS_TXT" "$BASE_TXT"
   cp -f "$THIS_ESS" "$BASE_ESS"
