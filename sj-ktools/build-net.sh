@@ -110,6 +110,13 @@ if [ ! -f "$O/.config" ]; then
   exit 1
 fi
 
+if [ "$INCREMENTAL" -eq 1 ] && [ -f "$O/.config" ]; then
+  echo "[build] incremental mode: skip olddefconfig to protect timestamps" | tee "$O/build.olddefconfig.log"
+else
+  echo "[build] olddefconfig (non-interactive)"
+  make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS olddefconfig 2>&1 | tee "$O/build.olddefconfig.log"
+fi
+
 case "$KARCH" in
   x86)
     IMG_TGT="bzImage"
