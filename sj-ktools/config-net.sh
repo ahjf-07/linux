@@ -66,10 +66,18 @@ echo "[cfg] LINUX_ROOT=$HOST_LINUX_ROOT"
 echo "[cfg] O=$O"
 echo "[cfg] base config: $base_cfg"
 
+TMP_CFG="$O/.config.tmp"
 if [ "$base_cfg" = "/proc/config.gz" ]; then
-  zcat "$base_cfg" > "$O/.config"
+  zcat "$base_cfg" > "$TMP_CFG"
 else
-  cp -f "$base_cfg" "$O/.config"
+  cp -f "$base_cfg" "$TMP_CFG"
+fi
+
+if [ -f "$O/.config" ] && cmp -s "$O/.config" "$TMP_CFG"; then
+  echo "[cfg] .config unchanged, keep timestamp" >&2
+  rm -f "$TMP_CFG"
+else
+  mv -f "$TMP_CFG" "$O/.config"
 fi
 
 cfg() { ./scripts/config --file "$O/.config" "$@"; }

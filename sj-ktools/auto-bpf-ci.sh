@@ -215,6 +215,12 @@ ref_updated=0
 if [ -z "$old_ref" ] || [ "$new_ref" != "$old_ref" ]; then
   ref_updated=1
 fi
+force_incremental=0
+if [ "$FORCE" -eq 1 ] && [ "$CLEAN" -eq 0 ] && [ "$MRPROPER" -eq 0 ]; then
+  if [ "$ref_updated" -eq 0 ] || [ "$NO_FETCH" -eq 1 ]; then
+    force_incremental=1
+  fi
+fi
 
 {
   echo "TIME_UTC=$now"
@@ -227,6 +233,7 @@ fi
   echo "NEW_REF=$new_ref"
   echo "HEAD_BEFORE=$head_before"
   echo "FORCE=$FORCE"
+  echo "FORCE_INCREMENTAL=$force_incremental"
   echo "NO_MERGE=$NO_MERGE"
   echo "CLEAN=$CLEAN"
   echo "MRPROPER=$MRPROPER"
@@ -341,7 +348,7 @@ if [ "$MRPROPER" -eq 1 ]; then
 elif [ "$CLEAN" -eq 1 ]; then
   bargs="$bargs -c"
 fi
-if [ "$FORCE" -eq 1 ] && [ "$ref_updated" -eq 0 ] && [ "$CLEAN" -eq 0 ] && [ "$MRPROPER" -eq 0 ]; then
+if [ "$force_incremental" -eq 1 ]; then
   bargs="$bargs -i"
 fi
   bargs="$bargs -r \"$LINUX_ROOT\" -o \"$O\""

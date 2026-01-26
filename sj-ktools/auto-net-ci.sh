@@ -24,7 +24,7 @@ Options:
   -c  clean rebuild: remove $O (out dir) before build
   -m  mrproper-ish: remove $O and also remove $O/.config (forces re-config)
   -N  no-merge: skip git switch/ff-only merge, build current HEAD (dirty OK)
-  -F  force-run: run even if no update after fetch (same as --force)
+  -F  force-run: run even if no update after fetch; uses incremental build when possible
 
 Long:
   --full           force full net selftests (override default fast)
@@ -201,6 +201,12 @@ if [ -z "$old_ref" ]; then
 elif [ "$new_ref" != "$old_ref" ]; then
   ref_updated=1
 fi
+force_incremental=0
+if [ "$FORCE" -eq 1 ] && [ "$CLEAN" -eq 0 ] && [ "$MRPROPER" -eq 0 ]; then
+  if [ "$ref_updated" -eq 0 ] || [ "$NO_FETCH" -eq 1 ]; then
+    force_incremental=1
+  fi
+fi
 
 {
   echo "TIME_UTC=$now"
@@ -214,6 +220,7 @@ fi
   echo "NEW_REF=$new_ref"
   echo "HEAD_BEFORE=$head_before"
   echo "FORCE=$FORCE"
+  echo "FORCE_INCREMENTAL=$force_incremental"
   echo "NO_MERGE=$NO_MERGE"
   echo "CLEAN=$CLEAN"
   echo "MRPROPER=$MRPROPER"
@@ -326,6 +333,9 @@ if [ "$NO_BUILD" -eq 0 ]; then
   [ "$LLVM" -eq 1 ] && bargs="$bargs -l"
   [ "$SPARSE" -eq 1 ] && bargs="$bargs -s"
   [ -n "$SPARSE_SUBTREES" ] && bargs="$bargs -S \"$SPARSE_SUBTREES\""
+  if [ "$force_incremental" -eq 1 ]; then
+    bargs="$bargs -i"
+  fi
   bargs="$bargs -r \"$LINUX_ROOT\" -o \"$O\""
   run "\"$TOOL_DIR/build-net.sh\" $bargs |& tee \"$RUN_DIR/build.all.log\""
 else

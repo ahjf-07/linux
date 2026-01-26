@@ -137,6 +137,22 @@ echo "[cfg] KCONFIG_NONINTERACTIVE=${KCONFIG_NONINTERACTIVE:-0}" >&2
 
 echo "==================================="
 
+make_q_check() {
+  local log=$1
+  shift
+  if "$@" -q >"$log" 2>&1; then
+    return 0
+  fi
+  local rc=$?
+  if [ "$rc" -eq 2 ]; then
+    echo "[build][error] make -q failed (see $log)" >&2
+    sed -n '1,120p' "$log" >&2
+    exit 2
+  fi
+  echo "[build] make -q reports not up to date (see $log)"
+  return 1
+}
+
 if [ "$MRPROPER" -eq 1 ]; then
   echo "[build] mrproper (will remove .config)"
   make -C "$LINUX_ROOT" O="$O" mrproper 2>&1 | tee "$O/build.mrproper.log"
@@ -151,7 +167,15 @@ if [ ! -f "$O/.config" ]; then
 fi
 
 echo "[build] olddefconfig (non-interactive)"
-make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS olddefconfig 2>&1 | tee "$O/build.olddefconfig.log"
+if [ "$INCREMENTAL" -eq 1 ]; then
+  if make_q_check "$O/build.olddefconfig.q.log" make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS olddefconfig; then
+    echo "[build] up to date: skip olddefconfig" | tee "$O/build.olddefconfig.log"
+  else
+    make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS olddefconfig 2>&1 | tee "$O/build.olddefconfig.log"
+  fi
+else
+  make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS olddefconfig 2>&1 | tee "$O/build.olddefconfig.log"
+fi
 
 case "$KARCH" in
   x86)   IMG_TGT="bzImage"; IMG_PATH="$O/arch/x86/boot/bzImage" ;;
@@ -160,7 +184,7 @@ esac
 
 echo "[build] kernel ($IMG_TGT + modules)  (no sparse)"
 if [ "$INCREMENTAL" -eq 1 ]; then
-  if make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS -q "$IMG_TGT" modules >/dev/null 2>&1; then
+  if make_q_check "$O/build.kernel.q.log" make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS "$IMG_TGT" modules; then
     echo "[build] up to date: skip kernel build" | tee "$O/build.kernel.log"
   else
     make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS -j"$JOBS" "$IMG_TGT" modules 2>&1 | tee "$O/build.kernel.log"
@@ -171,8 +195,8 @@ fi
 
 echo "[build] headers_install"
 if [ "$INCREMENTAL" -eq 1 ]; then
-  if make -C "$LINUX_ROOT" O="$O" -q headers_install \
-    INSTALL_HDR_PATH="$O/usr" >/dev/null 2>&1; then
+  if make_q_check "$O/build.headers.q.log" make -C "$LINUX_ROOT" O="$O" \
+    headers_install INSTALL_HDR_PATH="$O/usr"; then
     echo "[build] up to date: skip headers_install" | tee "$O/build.headers.log"
   else
     make -C "$LINUX_ROOT" O="$O" headers_install \
@@ -202,14 +226,15 @@ orig=$(make -C "$LINUX_ROOT/tools/testing/selftests/bpf" -pn \
 
 echo "[build] selftests/bpf (OUTPUT=$OUT_BPF)  (no sparse)"
 if [ "$INCREMENTAL" -eq 1 ]; then
-  if make -C "$LINUX_ROOT/tools/testing/selftests/bpf" -q \
+  if make_q_check "$O/build.selftests.bpf.q.log" \
+    make -C "$LINUX_ROOT/tools/testing/selftests/bpf" \
     O="$O" OUTPUT="$OUT_BPF" \
     KHDR_INCLUDES="$KHDR" \
     VMLINUX_BTF="$O/vmlinux" \
     BPFTOOL="$OUT_BPF/tools/sbin/bpftool" \
     $CLANG_ARG \
     BPF_CFLAGS="$orig" \
-    $MAKE_FULL_ARGS >/dev/null 2>&1; then
+    $MAKE_FULL_ARGS; then
     echo "[build] up to date: skip selftests/bpf" | tee "$O/build.selftests.bpf.log"
   else
     make -C "$LINUX_ROOT/tools/testing/selftests/bpf" \
