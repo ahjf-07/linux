@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 set -eu
 set -o pipefail
 
@@ -211,6 +211,10 @@ mkdir -p "$OUT_BPF"
 VMLINUX_H="$OUT_BPF/vmlinux.h"
 
 if [ -d "$OUT_BPF" ]; then
+  echo "[build] forcing fresh vmlinux.h for selftests"
+  rm -f "$VMLINUX_H" \
+    "$OUT_BPF/tools/include/vmlinux.h" 2>/dev/null || true
+  rm -rf "$OUT_BPF/tools/sbin/bpftool" 2>/dev/null || true
   echo "[build] cleaning stale bpf headers to prevent BTF pollution"
   find "$OUT_BPF" -name "vmlinux.h" -delete
 fi
