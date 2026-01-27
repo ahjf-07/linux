@@ -5,7 +5,9 @@ usage() {
   cat >&2 <<'USAGE'
 usage: auto-bpf-ci.sh [-l] [-s] [-S "subtrees"] [-o outdir] [-t remote/branch] [-e to_email]
                       [-c] [-m] [-F] [-U] [-f N] [-P cpus] [-M mem]
-                      [--ff] [--full] [--reset-baseline] [--force] [--update] [--no-test] [--no-build]
+                      [-K] [-T]
+                      [--ff] [--full] [--reset-baseline] [--force] [--update]
+                      [--no-test] [--no-build]
 
 Defaults:
   track  : upstream/master
@@ -28,6 +30,8 @@ Options:
   -f  fast tests: run N subtests (default: 30)
   -P  vng guest cpus (passed to run-bpf.sh)
   -M  vng guest memory (passed to run-bpf.sh, e.g. 2G)
+  -K  build kernel only (pass -K to build-bpf.sh)
+  -T  build tests only (pass -T to build-bpf.sh)
 
 Long:
   --ff             faster tests (run 10 subtests)
@@ -91,6 +95,8 @@ CPUS=2
 MEM=2G
 FAST_COUNT=30
 JSON_SUMMARY=1
+KERNEL_ONLY=0
+TESTS_ONLY=0
 
 _keep=""
 while [ $# -gt 0 ]; do
@@ -115,7 +121,7 @@ while [ $# -gt 0 ]; do
 done
 set -- $_keep "$@"
 
-while getopts "lgsS:o:t:e:cmFUf:P:M:" opt; do
+while getopts "lgsS:o:t:e:cmFUf:P:M:KT" opt; do
   case "$opt" in
     l) LLVM=1 ;;
     g) LLVM=0 ;;
@@ -135,6 +141,8 @@ while getopts "lgsS:o:t:e:cmFUf:P:M:" opt; do
       ;;
     P) CPUS="$OPTARG" ;;
     M) MEM="$OPTARG" ;;
+    K) KERNEL_ONLY=1 ;;
+    T) TESTS_ONLY=1 ;;
     h|*) usage ;;
   esac
 done
@@ -276,6 +284,8 @@ fi
   echo "MRPROPER=$MRPROPER"
   echo "NO_BUILD=$NO_BUILD"
   echo "NO_TEST=$NO_TEST"
+  echo "KERNEL_ONLY=$KERNEL_ONLY"
+  echo "TESTS_ONLY=$TESTS_ONLY"
   echo "CPUS=$CPUS"
   echo "MEM=$MEM"
   echo "FAST_COUNT=$FAST_COUNT"
@@ -388,9 +398,14 @@ if [ "$MRPROPER" -eq 1 ]; then
 elif [ "$CLEAN" -eq 1 ]; then
   bargs="$bargs -c"
 fi
-if [ "$force_incremental" -eq 1 ]; then
-  bargs="$bargs -i"
-fi
+  if [ "$force_incremental" -eq 1 ]; then
+    bargs="$bargs -i"
+  fi
+  if [ "$KERNEL_ONLY" -eq 1 ] && [ "$TESTS_ONLY" -eq 0 ]; then
+    bargs="$bargs -K"
+  elif [ "$TESTS_ONLY" -eq 1 ] && [ "$KERNEL_ONLY" -eq 0 ]; then
+    bargs="$bargs -T"
+  fi
   bargs="$bargs -r \"$LINUX_ROOT\" -o \"$O\""
   run "\"$TOOL_DIR/build-bpf.sh\" $bargs |& tee \"$RUN_DIR/build.all.log\""
 else
