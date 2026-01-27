@@ -4,7 +4,7 @@ set -o pipefail
 
 usage() {
   cat <<USAGE
-usage: $0 [-l] [-s] [-S "path1 path2 ..."] [-c|-m] [-i] [-j N] [-r linux_root] [-o outdir]
+usage: $0 [-l] [-s] [-S "path1 path2 ..."] [-c|-m] [-i] [-j N] [-r linux_root] [-o outdir] [-K|-T]
   -l : use LLVM/clang (LLVM=1)
   -s : run sparse (C=1) for selected subtrees ONLY
   -S : subtree list for sparse (space-separated paths under linux root)
@@ -15,6 +15,8 @@ usage: $0 [-l] [-s] [-S "path1 path2 ..."] [-c|-m] [-i] [-j N] [-r linux_root] [
   -j : jobs (default: nproc)
   -r : kernel source tree root (default: pwd)
   -o : output dir (default: <linux_root>/../out/full-{gcc,clang})
+  -K : kernel only (skip selftests/bpf)
+  -T : tests only (skip kernel build)
 USAGE
   exit 1
 }
@@ -28,8 +30,10 @@ INCREMENTAL=0
 JOBS=$(nproc)
 LINUX_ROOT=""
 O=""
+ONLY_KERNEL=0
+ONLY_TESTS=0
 
-while getopts "lsS:cmij:r:o:h" opt; do
+while getopts "lsS:cmij:r:o:KTh" opt; do
   case "$opt" in
     l) LLVM=1 ;;
     s) SPARSE=1 ;;
@@ -40,6 +44,8 @@ while getopts "lsS:cmij:r:o:h" opt; do
     j) JOBS="$OPTARG" ;;
     r) LINUX_ROOT="$OPTARG" ;;
     o) O="$OPTARG" ;;
+    K) ONLY_KERNEL=1 ;;
+    T) ONLY_TESTS=1 ;;
     h|*) usage ;;
   esac
 done
@@ -47,6 +53,10 @@ done
 if [ "$CLEAN" -eq 1 ] && [ "$MRPROPER" -eq 1 ]; then
   echo "ERROR: -c and -m are mutually exclusive" >&2
   exit 1
+fi
+if [ "$ONLY_KERNEL" -eq 1 ] && [ "$ONLY_TESTS" -eq 1 ]; then
+  ONLY_KERNEL=0
+  ONLY_TESTS=0
 fi
 
 [ -n "$LINUX_ROOT" ] || LINUX_ROOT=$(pwd)
@@ -179,29 +189,31 @@ case "$KARCH" in
   arm64) IMG_TGT="Image";  IMG_PATH="$O/arch/arm64/boot/Image" ;;
 esac
 
-echo "[build] kernel ($IMG_TGT + modules)  (no sparse)"
-if [ "$INCREMENTAL" -eq 1 ]; then
-  if make_q_check "$O/build.kernel.q.log" make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS "$IMG_TGT" modules; then
-    echo "[build] up to date: skip kernel build" | tee "$O/build.kernel.log"
+if [ "$ONLY_TESTS" -eq 0 ]; then
+  echo "[build] kernel ($IMG_TGT + modules)  (no sparse)"
+  if [ "$INCREMENTAL" -eq 1 ]; then
+    if make_q_check "$O/build.kernel.q.log" make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS "$IMG_TGT" modules; then
+      echo "[build] up to date: skip kernel build" | tee "$O/build.kernel.log"
+    else
+      make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS -j"$JOBS" "$IMG_TGT" modules 2>&1 | tee "$O/build.kernel.log"
+    fi
   else
     make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS -j"$JOBS" "$IMG_TGT" modules 2>&1 | tee "$O/build.kernel.log"
   fi
-else
-  make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS -j"$JOBS" "$IMG_TGT" modules 2>&1 | tee "$O/build.kernel.log"
-fi
 
-echo "[build] headers_install"
-if [ "$INCREMENTAL" -eq 1 ]; then
-  if make_q_check "$O/build.headers.q.log" make -C "$LINUX_ROOT" O="$O" \
-    headers_install INSTALL_HDR_PATH="$O/usr"; then
-    echo "[build] up to date: skip headers_install" | tee "$O/build.headers.log"
+  echo "[build] headers_install"
+  if [ "$INCREMENTAL" -eq 1 ]; then
+    if make_q_check "$O/build.headers.q.log" make -C "$LINUX_ROOT" O="$O" \
+      headers_install INSTALL_HDR_PATH="$O/usr"; then
+      echo "[build] up to date: skip headers_install" | tee "$O/build.headers.log"
+    else
+      make -C "$LINUX_ROOT" O="$O" headers_install \
+        INSTALL_HDR_PATH="$O/usr" 2>&1 | tee "$O/build.headers.log"
+    fi
   else
     make -C "$LINUX_ROOT" O="$O" headers_install \
       INSTALL_HDR_PATH="$O/usr" 2>&1 | tee "$O/build.headers.log"
   fi
-else
-  make -C "$LINUX_ROOT" O="$O" headers_install \
-    INSTALL_HDR_PATH="$O/usr" 2>&1 | tee "$O/build.headers.log"
 fi
 
 KHDR="-isystem $(realpath "$O/usr/include")"
@@ -210,13 +222,21 @@ OUT_BPF=$(realpath -m "$LINUX_ROOT/.kselftest-out/selftests-bpf")
 mkdir -p "$OUT_BPF"
 VMLINUX_H="$OUT_BPF/vmlinux.h"
 
-if [ -d "$OUT_BPF" ]; then
-  echo "[build] forcing fresh vmlinux.h for selftests"
-  rm -f "$VMLINUX_H" \
-    "$OUT_BPF/tools/include/vmlinux.h" 2>/dev/null || true
-  rm -rf "$OUT_BPF/tools/sbin/bpftool" 2>/dev/null || true
-  echo "[build] cleaning stale bpf headers to prevent BTF pollution"
-  find "$OUT_BPF" -name "vmlinux.h" -delete
+if [ "$ONLY_KERNEL" -eq 0 ]; then
+  [ -f "$O/vmlinux" ] || { echo "ERROR: Tests build requires existing $O/vmlinux" >&2; exit 1; }
+  if [ -d "$OUT_BPF" ]; then
+    echo "[build] forcing fresh vmlinux.h for selftests"
+    rm -f "$VMLINUX_H" \
+      "$OUT_BPF/tools/include/vmlinux.h" 2>/dev/null || true
+    rm -rf "$OUT_BPF/tools/sbin/bpftool" 2>/dev/null || true
+    echo "[build] cleaning stale bpf headers to prevent BTF pollution"
+    find "$OUT_BPF" -name "vmlinux.h" -delete
+    mkdir -p \
+      "$OUT_BPF/tools/build/libbpf" \
+      "$OUT_BPF/tools/build/bpftool" \
+      "$OUT_BPF/tools/include" \
+      "$OUT_BPF/tools/sbin"
+  fi
 fi
 
 CLANG_ARG=""
@@ -225,25 +245,37 @@ if [ "$LLVM" -eq 1 ]; then
   CLANG_ARG="CLANG=$CC_BIN"
 fi
 
-orig=$(make -C "$LINUX_ROOT/tools/testing/selftests/bpf" -pn \
-  O="$O" OUTPUT="$OUT_BPF" KHDR_INCLUDES="$KHDR" \
-  $CLANG_ARG \
-  $MAKE_FULL_ARGS \
-  | sed -n 's/^BPF_CFLAGS = //p' | head -n 1)
-
-echo "[build] selftests/bpf (OUTPUT=$OUT_BPF)  (no sparse)"
-if [ "$INCREMENTAL" -eq 1 ]; then
-  if make_q_check "$O/build.selftests.bpf.q.log" \
-    make -C "$LINUX_ROOT/tools/testing/selftests/bpf" \
-    O="$O" OUTPUT="$OUT_BPF" \
-    KHDR_INCLUDES="$KHDR" \
-    VMLINUX_BTF="$O/vmlinux" \
-    VMLINUX_H="$VMLINUX_H" \
-    BPFTOOL="$OUT_BPF/tools/sbin/bpftool" \
+if [ "$ONLY_KERNEL" -eq 0 ]; then
+  orig=$(make -C "$LINUX_ROOT/tools/testing/selftests/bpf" -pn \
+    O="$O" OUTPUT="$OUT_BPF" KHDR_INCLUDES="$KHDR" \
     $CLANG_ARG \
-    BPF_CFLAGS="$orig" \
-    $MAKE_FULL_ARGS; then
-    echo "[build] up to date: skip selftests/bpf" | tee "$O/build.selftests.bpf.log"
+    $MAKE_FULL_ARGS \
+    | sed -n 's/^BPF_CFLAGS = //p' | head -n 1)
+
+  echo "[build] selftests/bpf (OUTPUT=$OUT_BPF)  (no sparse)"
+  if [ "$INCREMENTAL" -eq 1 ]; then
+    if make_q_check "$O/build.selftests.bpf.q.log" \
+      make -C "$LINUX_ROOT/tools/testing/selftests/bpf" \
+      O="$O" OUTPUT="$OUT_BPF" \
+      KHDR_INCLUDES="$KHDR" \
+      VMLINUX_BTF="$O/vmlinux" \
+      VMLINUX_H="$VMLINUX_H" \
+      BPFTOOL="$OUT_BPF/tools/sbin/bpftool" \
+      $CLANG_ARG \
+      BPF_CFLAGS="$orig" \
+      $MAKE_FULL_ARGS; then
+      echo "[build] up to date: skip selftests/bpf" | tee "$O/build.selftests.bpf.log"
+    else
+      make -C "$LINUX_ROOT/tools/testing/selftests/bpf" \
+        O="$O" OUTPUT="$OUT_BPF" \
+        KHDR_INCLUDES="$KHDR" \
+        VMLINUX_BTF="$O/vmlinux" \
+        VMLINUX_H="$VMLINUX_H" \
+        BPFTOOL="$OUT_BPF/tools/sbin/bpftool" \
+        $CLANG_ARG \
+        BPF_CFLAGS="$orig" \
+        $MAKE_FULL_ARGS -j"$JOBS" 2>&1 | tee "$O/build.selftests.bpf.log"
+    fi
   else
     make -C "$LINUX_ROOT/tools/testing/selftests/bpf" \
       O="$O" OUTPUT="$OUT_BPF" \
@@ -255,16 +287,6 @@ if [ "$INCREMENTAL" -eq 1 ]; then
       BPF_CFLAGS="$orig" \
       $MAKE_FULL_ARGS -j"$JOBS" 2>&1 | tee "$O/build.selftests.bpf.log"
   fi
-else
-  make -C "$LINUX_ROOT/tools/testing/selftests/bpf" \
-    O="$O" OUTPUT="$OUT_BPF" \
-    KHDR_INCLUDES="$KHDR" \
-    VMLINUX_BTF="$O/vmlinux" \
-    VMLINUX_H="$VMLINUX_H" \
-    BPFTOOL="$OUT_BPF/tools/sbin/bpftool" \
-    $CLANG_ARG \
-    BPF_CFLAGS="$orig" \
-    $MAKE_FULL_ARGS -j"$JOBS" 2>&1 | tee "$O/build.selftests.bpf.log"
 fi
 
 if [ "$SPARSE" -eq 1 ]; then
@@ -288,6 +310,8 @@ if [ "$SPARSE" -eq 1 ]; then
   done
 fi
 
-echo "[out] kernel image: $IMG_PATH"
-[ -f "$IMG_PATH" ] || echo "[warn] image not found at expected path (check log): $IMG_PATH"
+if [ "$ONLY_TESTS" -eq 0 ]; then
+  echo "[out] kernel image: $IMG_PATH"
+  [ -f "$IMG_PATH" ] || echo "[warn] image not found at expected path (check log): $IMG_PATH"
+fi
 echo "[done] build finished"

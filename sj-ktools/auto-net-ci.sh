@@ -5,7 +5,7 @@ set -o pipefail
 usage() {
   cat >&2 <<'USAGE'
 usage: auto-net-ci.sh [-l] [-s] [-S "subtrees"] [-o outdir] [-t remote/branch] [-e to_email]
-                      [-c] [-m] [-F] [-U]
+                      [-c] [-m] [-F] [-U] [-K] [-T]
                       [--reset-baseline] [--force] [--update] [--no-test] [--no-build]
 
 Defaults:
@@ -26,6 +26,8 @@ Options:
   -m  mrproper-ish: remove $O and also remove $O/.config (forces re-config)
   -F  force-run: run even if no update after fetch; uses incremental build when possible
   -U  update: fetch + switch master + pull --ff-only TARGET_REF
+  -K  build kernel only (pass -K to build-net.sh)
+  -T  build tests only (pass -T to build-net.sh)
 
 Long:
   --full           force full net selftests (override default fast)
@@ -87,6 +89,8 @@ UPDATE=0
 TEST_FAST=1
 TEST_FFAST=0
 DRY_RUN=0
+KERNEL_ONLY=0
+TESTS_ONLY=0
 
 # --- strip long options anywhere so getopts won't choke on "--xxx" ---
 _keep=""
@@ -108,7 +112,7 @@ while [ $# -gt 0 ]; do
 done
 set -- $_keep "$@"
 
-while getopts "lsS:o:t:e:cmFUfh" opt; do
+while getopts "lsS:o:t:e:cmFUfhKT" opt; do
   case "$opt" in
     l) LLVM=1 ;;
     s) SPARSE=1 ;;
@@ -121,10 +125,14 @@ while getopts "lsS:o:t:e:cmFUfh" opt; do
     F) FORCE=1 ;;
     U) UPDATE=1 ;;
     f) TEST_FAST=1 ;;
+    K) KERNEL_ONLY=1 ;;
+    T) TESTS_ONLY=1 ;;
     h|*) usage ;;
   esac
 done
 shift $((OPTIND - 1))
+
+[ "$KERNEL_ONLY" -eq 1 ] && [ "$TESTS_ONLY" -eq 1 ] && KERNEL_ONLY=0 && TESTS_ONLY=0
 
 [ -n "$TO_EMAIL" ] || { echo "ERROR: missing recipient; use -e or set AUTO_EMAIL" >&2; exit 2; }
 
@@ -250,6 +258,8 @@ fi
   echo "MRPROPER=$MRPROPER"
   echo "NO_BUILD=$NO_BUILD"
   echo "NO_TEST=$NO_TEST"
+  echo "KERNEL_ONLY=$KERNEL_ONLY"
+  echo "TESTS_ONLY=$TESTS_ONLY"
   echo
   git log -1 --oneline "$new_ref" || true
 } >"$RUN_DIR/meta.txt"
@@ -360,6 +370,11 @@ if [ "$NO_BUILD" -eq 0 ]; then
   if [ "$force_incremental" -eq 1 ]; then
     bargs="$bargs -i"
   fi
+  if [ "$KERNEL_ONLY" -eq 1 ] && [ "$TESTS_ONLY" -eq 0 ]; then
+    bargs="$bargs -K"
+  elif [ "$TESTS_ONLY" -eq 1 ] && [ "$KERNEL_ONLY" -eq 0 ]; then
+    bargs="$bargs -T"
+  fi
   bargs="$bargs -r \"$LINUX_ROOT\" -o \"$O\""
   run "\"$TOOL_DIR/build-net.sh\" $bargs |& tee \"$RUN_DIR/build.all.log\""
 else
@@ -368,11 +383,33 @@ fi
 
 incremental_skipped=0
 if [ "$NO_BUILD" -eq 0 ] && [ "$force_incremental" -eq 1 ]; then
-  if [ -f "$O/build.olddefconfig.log" ] && grep -q "up to date: skip olddefconfig" "$O/build.olddefconfig.log" \
-    && [ -f "$O/build.kernel.log" ] && grep -q "up to date: skip kernel build" "$O/build.kernel.log" \
-    && [ -f "$O/build.headers.log" ] && grep -q "up to date: skip headers_install" "$O/build.headers.log" \
-    && [ -f "$O/build.selftests.net.log" ] && grep -q "up to date: skip selftests/net" "$O/build.selftests.net.log"; then
-    incremental_skipped=1
+  need_kernel=1
+  need_tests=1
+  [ "$TESTS_ONLY" -eq 1 ] && need_kernel=0
+  [ "$KERNEL_ONLY" -eq 1 ] && need_tests=0
+  if [ -f "$O/build.olddefconfig.log" ] && grep -q "up to date: skip olddefconfig" "$O/build.olddefconfig.log"; then
+    if [ "$need_kernel" -eq 1 ]; then
+      if [ -f "$O/build.kernel.log" ] && grep -q "up to date: skip kernel build" "$O/build.kernel.log" \
+        && [ -f "$O/build.headers.log" ] && grep -q "up to date: skip headers_install" "$O/build.headers.log"; then
+        kernel_ok=1
+      else
+        kernel_ok=0
+      fi
+    else
+      kernel_ok=1
+    fi
+    if [ "$need_tests" -eq 1 ]; then
+      if [ -f "$O/build.selftests.net.log" ] && grep -q "up to date: skip selftests/net" "$O/build.selftests.net.log"; then
+        tests_ok=1
+      else
+        tests_ok=0
+      fi
+    else
+      tests_ok=1
+    fi
+    if [ "$kernel_ok" -eq 1 ] && [ "$tests_ok" -eq 1 ]; then
+      incremental_skipped=1
+    fi
   fi
 fi
 

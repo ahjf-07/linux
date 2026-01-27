@@ -3,7 +3,7 @@ set -eu
 
 usage() {
   cat <<USAGE
-usage: $0 [-l] [-s] [-S "path1 path2 ..."] [-c|-m] [-i] [-j N] [-r linux_root] [-o outdir]
+usage: $0 [-l] [-s] [-S "path1 path2 ..."] [-c|-m] [-i] [-j N] [-r linux_root] [-o outdir] [-K|-T]
   -l : use LLVM/clang (LLVM=1)
   -s : run sparse (C=1) for selected subtrees ONLY (default set if -S not given)
   -S : subtree list for sparse (space-separated paths under linux root)
@@ -14,6 +14,8 @@ usage: $0 [-l] [-s] [-S "path1 path2 ..."] [-c|-m] [-i] [-j N] [-r linux_root] [
   -j : jobs (default: nproc)
   -r : kernel source tree root (default: pwd)
   -o : output dir (default: <linux_root>/../out/full-{gcc,clang})
+  -K : kernel only (skip selftests/net)
+  -T : tests only (skip kernel build)
 USAGE
   exit 1
 }
@@ -27,8 +29,10 @@ INCREMENTAL=0
 JOBS=$(nproc)
 LINUX_ROOT=""
 O=""
+ONLY_KERNEL=0
+ONLY_TESTS=0
 
-while getopts "lsS:cmij:r:o:h" opt; do
+while getopts "lsS:cmij:r:o:KTh" opt; do
   case "$opt" in
     l) LLVM=1 ;;
     s) SPARSE=1 ;;
@@ -39,6 +43,8 @@ while getopts "lsS:cmij:r:o:h" opt; do
     j) JOBS="$OPTARG" ;;
     r) LINUX_ROOT="$OPTARG" ;;
     o) O="$OPTARG" ;;
+    K) ONLY_KERNEL=1 ;;
+    T) ONLY_TESTS=1 ;;
     h|*) usage ;;
   esac
 done
@@ -46,6 +52,10 @@ done
 if [ "$CLEAN" -eq 1 ] && [ "$MRPROPER" -eq 1 ]; then
   echo "ERROR: -c and -m are mutually exclusive" >&2
   exit 1
+fi
+if [ "$ONLY_KERNEL" -eq 1 ] && [ "$ONLY_TESTS" -eq 1 ]; then
+  ONLY_KERNEL=0
+  ONLY_TESTS=0
 fi
 
 [ -n "$LINUX_ROOT" ] || LINUX_ROOT=$(pwd)
@@ -157,29 +167,31 @@ case "$KARCH" in
     ;;
 esac
 
-echo "[build] kernel ($IMG_TGT + modules)  (no sparse)"
-if [ "$INCREMENTAL" -eq 1 ]; then
-  if make_q_check "$O/build.kernel.q.log" make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS "$IMG_TGT" modules; then
-    echo "[build] up to date: skip kernel build" | tee "$O/build.kernel.log"
+if [ "$ONLY_TESTS" -eq 0 ]; then
+  echo "[build] kernel ($IMG_TGT + modules)  (no sparse)"
+  if [ "$INCREMENTAL" -eq 1 ]; then
+    if make_q_check "$O/build.kernel.q.log" make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS "$IMG_TGT" modules; then
+      echo "[build] up to date: skip kernel build" | tee "$O/build.kernel.log"
+    else
+      make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS -j"$JOBS" "$IMG_TGT" modules 2>&1 | tee "$O/build.kernel.log"
+    fi
   else
     make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS -j"$JOBS" "$IMG_TGT" modules 2>&1 | tee "$O/build.kernel.log"
   fi
-else
-  make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS -j"$JOBS" "$IMG_TGT" modules 2>&1 | tee "$O/build.kernel.log"
-fi
 
-echo "[build] headers_install"
-if [ "$INCREMENTAL" -eq 1 ]; then
-  if make_q_check "$O/build.headers.q.log" make -C "$LINUX_ROOT" O="$O" \
-    headers_install INSTALL_HDR_PATH="$O/usr"; then
-    echo "[build] up to date: skip headers_install" | tee "$O/build.headers.log"
+  echo "[build] headers_install"
+  if [ "$INCREMENTAL" -eq 1 ]; then
+    if make_q_check "$O/build.headers.q.log" make -C "$LINUX_ROOT" O="$O" \
+      headers_install INSTALL_HDR_PATH="$O/usr"; then
+      echo "[build] up to date: skip headers_install" | tee "$O/build.headers.log"
+    else
+      make -C "$LINUX_ROOT" O="$O" headers_install \
+        INSTALL_HDR_PATH="$O/usr" 2>&1 | tee "$O/build.headers.log"
+    fi
   else
     make -C "$LINUX_ROOT" O="$O" headers_install \
       INSTALL_HDR_PATH="$O/usr" 2>&1 | tee "$O/build.headers.log"
   fi
-else
-  make -C "$LINUX_ROOT" O="$O" headers_install \
-    INSTALL_HDR_PATH="$O/usr" 2>&1 | tee "$O/build.headers.log"
 fi
 
 KHDR="-isystem $(realpath "$O/usr/include")"
@@ -188,25 +200,27 @@ KHDR="-isystem $(realpath "$O/usr/include")"
 OUT_NET=$(realpath -m "$O/selftests-net")
 mkdir -p "$OUT_NET"
 
-echo "[build] selftests/net (OUTPUT=$OUT_NET)  (no sparse)"
-if [ "$INCREMENTAL" -eq 1 ]; then
-  if make_q_check "$O/build.selftests.net.q.log" \
-    make -C "$LINUX_ROOT/tools/testing/selftests/net" \
-    OUTPUT="$OUT_NET" \
-    KHDR_INCLUDES="$KHDR" \
-    $MAKE_FULL_ARGS; then
-    echo "[build] up to date: skip selftests/net" | tee "$O/build.selftests.net.log"
+if [ "$ONLY_KERNEL" -eq 0 ]; then
+  echo "[build] selftests/net (OUTPUT=$OUT_NET)  (no sparse)"
+  if [ "$INCREMENTAL" -eq 1 ]; then
+    if make_q_check "$O/build.selftests.net.q.log" \
+      make -C "$LINUX_ROOT/tools/testing/selftests/net" \
+      OUTPUT="$OUT_NET" \
+      KHDR_INCLUDES="$KHDR" \
+      $MAKE_FULL_ARGS; then
+      echo "[build] up to date: skip selftests/net" | tee "$O/build.selftests.net.log"
+    else
+      make -C "$LINUX_ROOT/tools/testing/selftests/net" \
+        OUTPUT="$OUT_NET" \
+        KHDR_INCLUDES="$KHDR" \
+        $MAKE_FULL_ARGS -j"$JOBS" 2>&1 | tee "$O/build.selftests.net.log"
+    fi
   else
     make -C "$LINUX_ROOT/tools/testing/selftests/net" \
       OUTPUT="$OUT_NET" \
       KHDR_INCLUDES="$KHDR" \
       $MAKE_FULL_ARGS -j"$JOBS" 2>&1 | tee "$O/build.selftests.net.log"
   fi
-else
-  make -C "$LINUX_ROOT/tools/testing/selftests/net" \
-    OUTPUT="$OUT_NET" \
-    KHDR_INCLUDES="$KHDR" \
-    $MAKE_FULL_ARGS -j"$JOBS" 2>&1 | tee "$O/build.selftests.net.log"
 fi
 
 # Sparse: subtree-only (do NOT mix into full build)
@@ -234,6 +248,8 @@ if [ "$SPARSE" -eq 1 ]; then
   done
 fi
 
-echo "[out] kernel image: $IMG_PATH"
-[ -f "$IMG_PATH" ] || echo "[warn] image not found at expected path (check log): $IMG_PATH"
+if [ "$ONLY_TESTS" -eq 0 ]; then
+  echo "[out] kernel image: $IMG_PATH"
+  [ -f "$IMG_PATH" ] || echo "[warn] image not found at expected path (check log): $IMG_PATH"
+fi
 echo "[done] build finished"
