@@ -125,22 +125,6 @@ echo "[cfg] KCONFIG_NONINTERACTIVE=${KCONFIG_NONINTERACTIVE:-0}" >&2
 
 echo "==================================="
 
-make_q_check() {
-  local log=$1
-  shift
-  if "$@" -q >"$log" 2>&1; then
-    return 0
-  fi
-  local rc=$?
-  if [ "$rc" -eq 2 ]; then
-    echo "[build][error] make -q failed (see $log)" >&2
-    sed -n '1,120p' "$log" >&2
-    exit 2
-  fi
-  echo "[build] make -q reports not up to date (see $log)"
-  return 1
-}
-
 if [ "$MRPROPER" -eq 1 ]; then
   echo "[build] mrproper (will remove .config)"
   make -C "$LINUX_ROOT" O="$O" mrproper 2>&1 | tee "$O/build.mrproper.log"
@@ -161,29 +145,6 @@ else
   make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS olddefconfig 2>&1 | tee "$O/build.olddefconfig.log"
 fi
 
-if [ "$INCREMENTAL" -eq 1 ]; then
-  config_hash_file="$O/.config.hash"
-  config_hash=$(sha1sum "$O/.config" | awk '{print $1}')
-  prev_hash=$(cat "$config_hash_file" 2>/dev/null || true)
-  echo "$config_hash" > "$config_hash_file"
-  if [ "$config_hash" = "$prev_hash" ]; then
-    echo "[build] incremental mode: protect config helpers to avoid make -q jitter" \
-      | tee "$O/build.config.touch.log"
-    for f in \
-      "$O/include/config/auto.conf" \
-      "$O/include/config/auto.conf.cmd" \
-      "$O/include/generated/autoconf.h"; do
-      [ -f "$f" ] && touch -r "$O/.config" "$f"
-    done
-    if [ -f "$O/include/generated/rustc_cfg" ]; then
-      touch -r "$O/.config" "$O/include/generated/rustc_cfg"
-    fi
-    if [ -f "$O/vmlinux" ] && [ -d "$O/scripts" ]; then
-      find "$O/scripts" -type f -exec touch -r "$O/vmlinux" {} + 2>/dev/null || true
-    fi
-  fi
-fi
-
 case "$KARCH" in
   x86)   IMG_TGT="bzImage"; IMG_PATH="$O/arch/x86/boot/bzImage" ;;
   arm64) IMG_TGT="Image";  IMG_PATH="$O/arch/arm64/boot/Image" ;;
@@ -191,29 +152,11 @@ esac
 
 if [ "$ONLY_TESTS" -eq 0 ]; then
   echo "[build] kernel ($IMG_TGT + modules)  (no sparse)"
-  if [ "$INCREMENTAL" -eq 1 ]; then
-    if make_q_check "$O/build.kernel.q.log" make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS "$IMG_TGT" modules; then
-      echo "[build] up to date: skip kernel build" | tee "$O/build.kernel.log"
-    else
-      make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS -j"$JOBS" "$IMG_TGT" modules 2>&1 | tee "$O/build.kernel.log"
-    fi
-  else
-    make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS -j"$JOBS" "$IMG_TGT" modules 2>&1 | tee "$O/build.kernel.log"
-  fi
+  make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS -j"$JOBS" "$IMG_TGT" modules 2>&1 | tee "$O/build.kernel.log"
 
   echo "[build] headers_install"
-  if [ "$INCREMENTAL" -eq 1 ]; then
-    if make_q_check "$O/build.headers.q.log" make -C "$LINUX_ROOT" O="$O" \
-      headers_install INSTALL_HDR_PATH="$O/usr"; then
-      echo "[build] up to date: skip headers_install" | tee "$O/build.headers.log"
-    else
-      make -C "$LINUX_ROOT" O="$O" headers_install \
-        INSTALL_HDR_PATH="$O/usr" 2>&1 | tee "$O/build.headers.log"
-    fi
-  else
-    make -C "$LINUX_ROOT" O="$O" headers_install \
-      INSTALL_HDR_PATH="$O/usr" 2>&1 | tee "$O/build.headers.log"
-  fi
+  make -C "$LINUX_ROOT" O="$O" headers_install \
+    INSTALL_HDR_PATH="$O/usr" 2>&1 | tee "$O/build.headers.log"
 fi
 
 KHDR="-isystem $(realpath "$O/usr/include")"
@@ -255,40 +198,15 @@ if [ "$ONLY_KERNEL" -eq 0 ]; then
     | sed -n 's/^BPF_CFLAGS = //p' | head -n 1)
 
   echo "[build] selftests/bpf (OUTPUT=$OUT_BPF)  (no sparse)"
-  if [ "$INCREMENTAL" -eq 1 ]; then
-    if make_q_check "$O/build.selftests.bpf.q.log" \
-      make -C "$LINUX_ROOT/tools/testing/selftests/bpf" \
-      O="$O" OUTPUT="$OUT_BPF" \
-      KHDR_INCLUDES="$KHDR" \
-      VMLINUX_BTF="$O/vmlinux" \
-      VMLINUX_H="$VMLINUX_H" \
-      BPFTOOL="$OUT_BPF/tools/sbin/bpftool" \
-      $CLANG_ARG \
-      BPF_CFLAGS="$orig" \
-      $MAKE_FULL_ARGS; then
-      echo "[build] up to date: skip selftests/bpf" | tee "$O/build.selftests.bpf.log"
-    else
-      make -C "$LINUX_ROOT/tools/testing/selftests/bpf" \
-        O="$O" OUTPUT="$OUT_BPF" \
-        KHDR_INCLUDES="$KHDR" \
-        VMLINUX_BTF="$O/vmlinux" \
-        VMLINUX_H="$VMLINUX_H" \
-        BPFTOOL="$OUT_BPF/tools/sbin/bpftool" \
-        $CLANG_ARG \
-        BPF_CFLAGS="$orig" \
-        $MAKE_FULL_ARGS -j"$JOBS" 2>&1 | tee "$O/build.selftests.bpf.log"
-    fi
-  else
-    make -C "$LINUX_ROOT/tools/testing/selftests/bpf" \
-      O="$O" OUTPUT="$OUT_BPF" \
-      KHDR_INCLUDES="$KHDR" \
-      VMLINUX_BTF="$O/vmlinux" \
-      VMLINUX_H="$VMLINUX_H" \
-      BPFTOOL="$OUT_BPF/tools/sbin/bpftool" \
-      $CLANG_ARG \
-      BPF_CFLAGS="$orig" \
-      $MAKE_FULL_ARGS -j"$JOBS" 2>&1 | tee "$O/build.selftests.bpf.log"
-  fi
+  make -C "$LINUX_ROOT/tools/testing/selftests/bpf" \
+    O="$O" OUTPUT="$OUT_BPF" \
+    KHDR_INCLUDES="$KHDR" \
+    VMLINUX_BTF="$O/vmlinux" \
+    VMLINUX_H="$VMLINUX_H" \
+    BPFTOOL="$OUT_BPF/tools/sbin/bpftool" \
+    $CLANG_ARG \
+    BPF_CFLAGS="$orig" \
+    $MAKE_FULL_ARGS -j"$JOBS" 2>&1 | tee "$O/build.selftests.bpf.log"
 fi
 
 if [ "$SPARSE" -eq 1 ]; then

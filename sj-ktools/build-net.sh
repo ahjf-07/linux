@@ -102,22 +102,6 @@ fi
 # Sparse args: used only for subtree sparse runs.
 MAKE_SPARSE_ARGS="$MAKE_FULL_ARGS C=1 CHECK=sparse"
 
-make_q_check() {
-  local log=$1
-  shift
-  if "$@" -q >"$log" 2>&1; then
-    return 0
-  fi
-  local rc=$?
-  if [ "$rc" -eq 2 ]; then
-    echo "[build][error] make -q failed (see $log)" >&2
-    sed -n '1,120p' "$log" >&2
-    exit 2
-  fi
-  echo "[build] make -q reports not up to date (see $log)"
-  return 1
-}
-
 if [ "$MRPROPER" -eq 1 ]; then
   echo "[build] mrproper (will remove .config)"
   make -C "$LINUX_ROOT" O="$O" mrproper 2>&1 | tee "$O/build.mrproper.log"
@@ -139,23 +123,6 @@ else
   make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS olddefconfig 2>&1 | tee "$O/build.olddefconfig.log"
 fi
 
-if [ "$INCREMENTAL" -eq 1 ]; then
-  config_hash_file="$O/.config.hash"
-  config_hash=$(sha1sum "$O/.config" | awk '{print $1}')
-  prev_hash=$(cat "$config_hash_file" 2>/dev/null || true)
-  echo "$config_hash" > "$config_hash_file"
-  if [ "$config_hash" = "$prev_hash" ]; then
-    echo "[build] incremental mode: .config unchanged; touch config helpers to avoid make -q jitter" \
-      | tee "$O/build.config.touch.log"
-    for f in \
-      "$O/include/config/auto.conf" \
-      "$O/include/config/auto.conf.cmd" \
-      "$O/include/generated/autoconf.h"; do
-      [ -f "$f" ] && touch "$f"
-    done
-  fi
-fi
-
 case "$KARCH" in
   x86)
     IMG_TGT="bzImage"
@@ -169,29 +136,11 @@ esac
 
 if [ "$ONLY_TESTS" -eq 0 ]; then
   echo "[build] kernel ($IMG_TGT + modules)  (no sparse)"
-  if [ "$INCREMENTAL" -eq 1 ]; then
-    if make_q_check "$O/build.kernel.q.log" make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS "$IMG_TGT" modules; then
-      echo "[build] up to date: skip kernel build" | tee "$O/build.kernel.log"
-    else
-      make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS -j"$JOBS" "$IMG_TGT" modules 2>&1 | tee "$O/build.kernel.log"
-    fi
-  else
-    make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS -j"$JOBS" "$IMG_TGT" modules 2>&1 | tee "$O/build.kernel.log"
-  fi
+  make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS -j"$JOBS" "$IMG_TGT" modules 2>&1 | tee "$O/build.kernel.log"
 
   echo "[build] headers_install"
-  if [ "$INCREMENTAL" -eq 1 ]; then
-    if make_q_check "$O/build.headers.q.log" make -C "$LINUX_ROOT" O="$O" \
-      headers_install INSTALL_HDR_PATH="$O/usr"; then
-      echo "[build] up to date: skip headers_install" | tee "$O/build.headers.log"
-    else
-      make -C "$LINUX_ROOT" O="$O" headers_install \
-        INSTALL_HDR_PATH="$O/usr" 2>&1 | tee "$O/build.headers.log"
-    fi
-  else
-    make -C "$LINUX_ROOT" O="$O" headers_install \
-      INSTALL_HDR_PATH="$O/usr" 2>&1 | tee "$O/build.headers.log"
-  fi
+  make -C "$LINUX_ROOT" O="$O" headers_install \
+    INSTALL_HDR_PATH="$O/usr" 2>&1 | tee "$O/build.headers.log"
 fi
 
 KHDR="-isystem $(realpath "$O/usr/include")"
@@ -202,25 +151,10 @@ mkdir -p "$OUT_NET"
 
 if [ "$ONLY_KERNEL" -eq 0 ]; then
   echo "[build] selftests/net (OUTPUT=$OUT_NET)  (no sparse)"
-  if [ "$INCREMENTAL" -eq 1 ]; then
-    if make_q_check "$O/build.selftests.net.q.log" \
-      make -C "$LINUX_ROOT/tools/testing/selftests/net" \
-      OUTPUT="$OUT_NET" \
-      KHDR_INCLUDES="$KHDR" \
-      $MAKE_FULL_ARGS; then
-      echo "[build] up to date: skip selftests/net" | tee "$O/build.selftests.net.log"
-    else
-      make -C "$LINUX_ROOT/tools/testing/selftests/net" \
-        OUTPUT="$OUT_NET" \
-        KHDR_INCLUDES="$KHDR" \
-        $MAKE_FULL_ARGS -j"$JOBS" 2>&1 | tee "$O/build.selftests.net.log"
-    fi
-  else
-    make -C "$LINUX_ROOT/tools/testing/selftests/net" \
-      OUTPUT="$OUT_NET" \
-      KHDR_INCLUDES="$KHDR" \
-      $MAKE_FULL_ARGS -j"$JOBS" 2>&1 | tee "$O/build.selftests.net.log"
-  fi
+  make -C "$LINUX_ROOT/tools/testing/selftests/net" \
+    OUTPUT="$OUT_NET" \
+    KHDR_INCLUDES="$KHDR" \
+    $MAKE_FULL_ARGS -j"$JOBS" 2>&1 | tee "$O/build.selftests.net.log"
 fi
 
 # Sparse: subtree-only (do NOT mix into full build)
