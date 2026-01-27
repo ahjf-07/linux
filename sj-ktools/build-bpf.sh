@@ -171,6 +171,16 @@ if [ "$ONLY_KERNEL" -eq 0 ]; then
     echo "[build] forcing fresh vmlinux.h (keeping dir skeleton)"
     find "$OUT_BPF" -name "vmlinux.h" -delete
     rm -f "$OUT_BPF/tools/include/vmlinux.h" 2>/dev/null || true
+    mkdir -p \
+      "$OUT_BPF/tools/build/libbpf/staticobjs" \
+      "$OUT_BPF/tools/build/libbpf/sharedobjs" \
+      "$OUT_BPF/tools/build/bpftool/bootstrap/libbpf/staticobjs" \
+      "$OUT_BPF/tools/build/bpftool/bootstrap/libbpf/include" \
+      "$OUT_BPF/tools/build/bpftool/bootstrap/bpftool" \
+      "$OUT_BPF/tools/build/resolve_btfids/libsubcmd" \
+      "$OUT_BPF/tools/include/bpf" \
+      "$OUT_BPF/tools/sbin" \
+      "$OUT_BPF/include/bpf"
   fi
 fi
 
