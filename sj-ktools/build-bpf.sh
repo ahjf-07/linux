@@ -167,9 +167,20 @@ VMLINUX_H="$OUT_BPF/vmlinux.h"
 
 if [ "$ONLY_KERNEL" -eq 0 ]; then
   [ -f "$O/vmlinux" ] || { echo "ERROR: Tests build requires existing $O/vmlinux" >&2; exit 1; }
-  if [ ! -d "$OUT_BPF" ]; then
-    mkdir -p "$OUT_BPF"
-  fi
+
+  # --- 仅仅创建目录，不删除任何文件 ---
+  # 只要目录在，bpftool 就能顺利编译（利用旧的 vmlinux.h 或者自愈）
+  # 只要 $O/vmlinux 是新的，make 就会自动刷新 vmlinux.h，从而完成“解毒”
+  mkdir -p \
+    "$OUT_BPF/tools/build/libbpf/staticobjs" \
+    "$OUT_BPF/tools/build/libbpf/sharedobjs" \
+    "$OUT_BPF/tools/build/bpftool/bootstrap/libbpf/staticobjs" \
+    "$OUT_BPF/tools/build/bpftool/bootstrap/libbpf/include" \
+    "$OUT_BPF/tools/build/bpftool/bootstrap/bpftool" \
+    "$OUT_BPF/tools/build/resolve_btfids/libsubcmd" \
+    "$OUT_BPF/tools/include/bpf" \
+    "$OUT_BPF/tools/sbin" \
+    "$OUT_BPF/include/bpf"
 fi
 
 CLANG_ARG=""
