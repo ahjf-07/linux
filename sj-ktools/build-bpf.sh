@@ -232,7 +232,8 @@ if [ "$ONLY_KERNEL" -eq 0 ]; then
     echo "[build] cleaning stale bpf headers to prevent BTF pollution"
     find "$OUT_BPF" -name "vmlinux.h" -delete
     mkdir -p \
-      "$OUT_BPF/tools/build/libbpf" \
+      "$OUT_BPF/tools/build/libbpf/staticobjs" \
+      "$OUT_BPF/tools/build/libbpf/sharedobjs" \
       "$OUT_BPF/tools/build/bpftool" \
       "$OUT_BPF/tools/include" \
       "$OUT_BPF/tools/sbin"

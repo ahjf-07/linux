@@ -84,6 +84,7 @@ RESET_BASELINE=0
 FORCE=0
 NO_TEST=0
 NO_BUILD=0
+NO_SCAN=0
 
 CLEAN=0
 MRPROPER=0
@@ -141,8 +142,8 @@ while getopts "lgsS:o:t:e:cmFUf:P:M:KT" opt; do
       ;;
     P) CPUS="$OPTARG" ;;
     M) MEM="$OPTARG" ;;
-    K) KERNEL_ONLY=1 ;;
-    T) TESTS_ONLY=1 ;;
+    K) KERNEL_ONLY=1; FORCE=1 ;;
+    T) TESTS_ONLY=1; FORCE=1 ;;
     h|*) usage ;;
   esac
 done
@@ -151,6 +152,12 @@ shift $((OPTIND - 1))
 [ -n "$TO_EMAIL" ] || { echo "ERROR: missing recipient; use -e or set AUTO_EMAIL" >&2; exit 2; }
 
 LINUX_ROOT="$(pwd)"
+
+if [ "$KERNEL_ONLY" -eq 1 ]; then
+  echo "[auto] ONLY_KERNEL: disabling tests and scan" >&2
+  NO_TEST=1
+  NO_SCAN=1
+fi
 
 if [ -z "$O" ]; then
   if [ "$LLVM" -eq 1 ]; then
@@ -284,6 +291,7 @@ fi
   echo "MRPROPER=$MRPROPER"
   echo "NO_BUILD=$NO_BUILD"
   echo "NO_TEST=$NO_TEST"
+  echo "NO_SCAN=$NO_SCAN"
   echo "KERNEL_ONLY=$KERNEL_ONLY"
   echo "TESTS_ONLY=$TESTS_ONLY"
   echo "CPUS=$CPUS"
@@ -464,10 +472,14 @@ if [ "$NO_BUILD" -eq 0 ]; then
     [ -f "$RUN_DIR/build.all.log" ] && cp -f "$RUN_DIR/build.all.log" "$PREV_BUILD_ALL"
   fi
 fi
-if [ "$incremental_skipped" -eq 1 ] && [ -f "$RUN_DIR/scan.txt" ]; then
-  echo "[auto] incremental build skipped; reuse scan.txt" >&2
+if [ "$NO_SCAN" -eq 0 ]; then
+  if [ "$incremental_skipped" -eq 1 ] && [ -f "$RUN_DIR/scan.txt" ]; then
+    echo "[auto] incremental build skipped; reuse scan.txt" >&2
+  else
+    run "\"$TOOL_DIR/scan-nb.sh\" -e -w -s -n 120 -k bpf -r \"$LINUX_ROOT\" -o \"$O\" >\"$RUN_DIR/scan.txt\" 2>&1 || true"
+  fi
 else
-  run "\"$TOOL_DIR/scan-nb.sh\" -e -w -s -n 120 -k bpf -r \"$LINUX_ROOT\" -o \"$O\" >\"$RUN_DIR/scan.txt\" 2>&1 || true"
+  echo "[auto] --no-scan: skip scan" >"$RUN_DIR/scan.txt"
 fi
 
 WARN_LIST="$RUN_DIR/scan.warnings.txt"
