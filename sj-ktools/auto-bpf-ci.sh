@@ -401,10 +401,12 @@ fi
   if [ "$force_incremental" -eq 1 ]; then
     bargs="$bargs -i"
   fi
-  if [ "$KERNEL_ONLY" -eq 1 ] && [ "$TESTS_ONLY" -eq 0 ]; then
-    bargs="$bargs -K"
-  elif [ "$TESTS_ONLY" -eq 1 ] && [ "$KERNEL_ONLY" -eq 0 ]; then
-    bargs="$bargs -T"
+  if [ "$NO_BUILD" -eq 0 ]; then
+    if [ "$KERNEL_ONLY" -eq 1 ] && [ "$TESTS_ONLY" -eq 0 ]; then
+      bargs="$bargs -K"
+    elif [ "$TESTS_ONLY" -eq 1 ] && [ "$KERNEL_ONLY" -eq 0 ]; then
+      bargs="$bargs -T"
+    fi
   fi
   bargs="$bargs -r \"$LINUX_ROOT\" -o \"$O\""
   run "\"$TOOL_DIR/build-bpf.sh\" $bargs |& tee \"$RUN_DIR/build.all.log\""
