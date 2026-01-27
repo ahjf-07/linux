@@ -197,6 +197,27 @@ if [ "$ONLY_KERNEL" -eq 0 ]; then
     | sed -n 's/^BPF_CFLAGS = //p' | head -n 1)
 
   echo "[build] selftests/bpf (OUTPUT=$OUT_BPF)  (no sparse)"
+
+# [fix] prebuild tools/build artifacts to avoid race in selftests/bpf test_kmods (Error 127)
+  echo "[build] prebuild: libbpf.so into OUT_BPF/tools/build/libbpf"
+  mkdir -p "$OUT_BPF/tools/build/libbpf"
+  make -C "$LINUX_ROOT/tools/lib/bpf" \
+    OUTPUT="$OUT_BPF/tools/build/libbpf/" \
+    -j"$JOBS" 2>&1 | tee "$O/build.tools.libbpf.log"
+  [ -f "$OUT_BPF/tools/build/libbpf/libbpf.so" ] || {
+    echo "ERROR: missing $OUT_BPF/tools/build/libbpf/libbpf.so" >&2; exit 2; }
+
+  echo "[build] prebuild: resolve_btfids into OUT_BPF/tools/build/resolve_btfids"
+  mkdir -p "$OUT_BPF/tools/build/resolve_btfids"
+  make -C "$LINUX_ROOT/tools/bpf/resolve_btfids" \
+    O="$O" OUTPUT="$OUT_BPF/tools/build/resolve_btfids/" \
+    -j"$JOBS" 2>&1 | tee "$O/build.tools.resolve_btfids.log"
+  [ -x "$OUT_BPF/tools/build/resolve_btfids/resolve_btfids" ] || {
+    echo "ERROR: missing $OUT_BPF/tools/build/resolve_btfids/resolve_btfids" >&2; exit 2; }
+
+  mkdir -p "$OUT_BPF/tools/sbin"
+  cp -f "$OUT_BPF/tools/build/resolve_btfids/resolve_btfids" "$OUT_BPF/tools/sbin/" || true
+
   make -C "$LINUX_ROOT/tools/testing/selftests/bpf" \
     O="$O" OUTPUT="$OUT_BPF" \
     KHDR_INCLUDES="$KHDR" \
