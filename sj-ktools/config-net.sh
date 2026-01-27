@@ -84,12 +84,7 @@ else
   cp -f "$base_cfg" "$TMP_CFG"
 fi
 
-if [ -f "$O/.config" ] && cmp -s "$O/.config" "$TMP_CFG"; then
-  echo "[cfg] .config unchanged, keep timestamp" >&2
-  rm -f "$TMP_CFG"
-else
-  mv -f "$TMP_CFG" "$O/.config"
-fi
+mv -f "$TMP_CFG" "$O/.config"
 
 cfg() { ./scripts/config --file "$O/.config" "$@"; }
 
