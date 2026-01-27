@@ -234,8 +234,9 @@ if [ "$ONLY_KERNEL" -eq 0 ]; then
     mkdir -p \
       "$OUT_BPF/tools/build/libbpf/staticobjs" \
       "$OUT_BPF/tools/build/libbpf/sharedobjs" \
-      "$OUT_BPF/tools/build/bpftool" \
-      "$OUT_BPF/tools/include" \
+      "$OUT_BPF/tools/build/bpftool/bootstrap/libbpf/staticobjs" \
+      "$OUT_BPF/tools/build/bpftool/bootstrap/bpftool" \
+      "$OUT_BPF/tools/include/bpf" \
       "$OUT_BPF/tools/sbin"
   fi
 fi
