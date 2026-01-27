@@ -415,7 +415,7 @@ fi
     bargs="$bargs -T"
   fi
   bargs="$bargs -r \"$LINUX_ROOT\" -o \"$O\""
-  run "\"$TOOL_DIR/build-bpf.sh\" $bargs |& tee \"$RUN_DIR/build.all.log\""
+  run "bash \"$TOOL_DIR/build-bpf.sh\" $bargs |& tee \"$RUN_DIR/build.all.log\""
 else
   echo "[auto] --no-build: skip build" >"$RUN_DIR/build.all.log"
 fi
