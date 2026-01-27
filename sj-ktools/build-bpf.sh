@@ -168,19 +168,9 @@ VMLINUX_H="$OUT_BPF/vmlinux.h"
 if [ "$ONLY_KERNEL" -eq 0 ]; then
   [ -f "$O/vmlinux" ] || { echo "ERROR: Tests build requires existing $O/vmlinux" >&2; exit 1; }
   if [ -d "$OUT_BPF" ]; then
-    echo "[build] forcing fresh vmlinux.h for selftests"
-    rm -f "$VMLINUX_H" \
-      "$OUT_BPF/tools/include/vmlinux.h" 2>/dev/null || true
-    rm -rf "$OUT_BPF/tools/sbin/bpftool" 2>/dev/null || true
-    echo "[build] cleaning stale bpf headers to prevent BTF pollution"
+    echo "[build] forcing fresh vmlinux.h (keeping dir skeleton)"
     find "$OUT_BPF" -name "vmlinux.h" -delete
-    mkdir -p \
-      "$OUT_BPF/tools/build/libbpf/staticobjs" \
-      "$OUT_BPF/tools/build/libbpf/sharedobjs" \
-      "$OUT_BPF/tools/build/bpftool/bootstrap/libbpf/staticobjs" \
-      "$OUT_BPF/tools/build/bpftool/bootstrap/bpftool" \
-      "$OUT_BPF/tools/include/bpf" \
-      "$OUT_BPF/tools/sbin"
+    rm -f "$OUT_BPF/tools/include/vmlinux.h" 2>/dev/null || true
   fi
 fi
 
