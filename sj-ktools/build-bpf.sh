@@ -164,7 +164,8 @@ KHDR="-isystem $(realpath "$O/usr/include")"
 OUT_BPF=$(realpath -m "$LINUX_ROOT/.kselftest-out/selftests-bpf")
 mkdir -p "$OUT_BPF"
 VMLINUX_H="$OUT_BPF/vmlinux.h"
-
+VMLINUX_H_ARG=""
+[ -f "$VMLINUX_H" ] && VMLINUX_H_ARG="VMLINUX_H=$VMLINUX_H"
 if [ "$ONLY_KERNEL" -eq 0 ]; then
   [ -f "$O/vmlinux" ] || { echo "ERROR: Tests build requires existing $O/vmlinux" >&2; exit 1; }
 
@@ -176,7 +177,6 @@ if [ "$ONLY_KERNEL" -eq 0 ]; then
     "$OUT_BPF/tools/build/libbpf/sharedobjs" \
     "$OUT_BPF/tools/build/bpftool/bootstrap/libbpf/staticobjs" \
     "$OUT_BPF/tools/build/bpftool/bootstrap/libbpf/include" \
-    "$OUT_BPF/tools/build/bpftool/bootstrap/bpftool" \
     "$OUT_BPF/tools/build/resolve_btfids/libsubcmd" \
     "$OUT_BPF/tools/include/bpf" \
     "$OUT_BPF/tools/sbin" \
@@ -184,12 +184,48 @@ if [ "$ONLY_KERNEL" -eq 0 ]; then
 fi
 
 CLANG_ARG=""
+KBUILD_LLVM_ARG=""
 if [ "$LLVM" -eq 1 ]; then
   [ -n "${CC_BIN:-}" ] || { echo "ERROR: CC_BIN empty while LLVM=1" >&2; exit 2; }
   CLANG_ARG="CLANG=$CC_BIN"
+  KBUILD_LLVM_ARG="LLVM=1 CC=$CC_BIN HOSTCC=$CC_BIN"
 fi
 
 if [ "$ONLY_KERNEL" -eq 0 ]; then
+
+
+  # [fix] prebuild artifacts BEFORE make -pn (Makefile parse runs readelf/resolve_btfids)
+  echo "[build] prebuild(early): libbpf.so + resolve_btfids for selftests/bpf (before -pn)"
+  mkdir -p "$OUT_BPF/tools/build/libbpf" "$OUT_BPF/tools/build/resolve_btfids" "$OUT_BPF/tools/sbin"
+
+  echo "[build] prepn: build libbpf.so into OUT_BPF/tools/build/libbpf"
+  make -C "$LINUX_ROOT/tools/lib/bpf" \
+    OUTPUT="$OUT_BPF/tools/build/libbpf/" \
+    $MAKE_FULL_ARGS \
+    -j"$JOBS" 2>&1 | tee "$O/build.tools.prepn.libbpf.log"
+
+  echo "[build] prepn: install libbpf headers into OUT_BPF/tools/include"
+  make -C "$LINUX_ROOT/tools/lib/bpf" \
+    OUTPUT="$OUT_BPF/tools/build/libbpf/" \
+    DESTDIR="$OUT_BPF/tools" prefix="" \
+    INCLUDEDIR="/include" \
+    install_headers 2>&1 | tee "$O/build.tools.prepn.libbpf.headers.log"
+
+  [ -f "$OUT_BPF/tools/include/bpf/bpf.h" ] || { echo "ERROR: missing $OUT_BPF/tools/include/bpf/bpf.h" >&2; exit 2; }
+
+  [ -f "$OUT_BPF/tools/build/libbpf/sharedobjs/libbpf-in.o" ] || { echo "ERROR: missing $OUT_BPF/tools/build/libbpf/sharedobjs/libbpf-in.o" >&2; exit 2; }
+  [ -f "$OUT_BPF/tools/build/libbpf/libbpf.so" ] || { echo "ERROR: missing $OUT_BPF/tools/build/libbpf/libbpf.so" >&2; exit 2; }
+
+  echo "[build] prepn: reuse kernel-built resolve_btfids from objtree"
+  RESOLVE_BTFIDS_OBJ="$O/tools/bpf/resolve_btfids/resolve_btfids"
+  [ -x "$RESOLVE_BTFIDS_OBJ" ] || { echo "ERROR: missing $RESOLVE_BTFIDS_OBJ" >&2; exit 2; }
+  ln -sf "$RESOLVE_BTFIDS_OBJ" "$OUT_BPF/tools/build/resolve_btfids/resolve_btfids"
+  cp -f "$RESOLVE_BTFIDS_OBJ" "$OUT_BPF/tools/sbin/" || true
+  [ -x "$OUT_BPF/tools/build/resolve_btfids/resolve_btfids" ] || { echo "ERROR: missing $OUT_BPF/tools/build/resolve_btfids/resolve_btfids" >&2; exit 2; }
+
+
+
+
   orig=$(make -C "$LINUX_ROOT/tools/testing/selftests/bpf" -pn \
     O="$O" OUTPUT="$OUT_BPF" KHDR_INCLUDES="$KHDR" \
     $CLANG_ARG \
@@ -198,34 +234,64 @@ if [ "$ONLY_KERNEL" -eq 0 ]; then
 
   echo "[build] selftests/bpf (OUTPUT=$OUT_BPF)  (no sparse)"
 
-# [fix] prebuild tools/build artifacts to avoid race in selftests/bpf test_kmods (Error 127)
-  echo "[build] prebuild: libbpf.so into OUT_BPF/tools/build/libbpf"
-  mkdir -p "$OUT_BPF/tools/build/libbpf"
-  make -C "$LINUX_ROOT/tools/lib/bpf" \
-    OUTPUT="$OUT_BPF/tools/build/libbpf/" \
-    -j"$JOBS" 2>&1 | tee "$O/build.tools.libbpf.log"
+  # [fix] prebuild selftests/bpf tools/build artifacts (libbpf + resolve_btfids) to avoid race (Error 127)
+  echo "[build] prebuild: selftests/bpf tools/build (libbpf + resolve_btfids)"
+  mkdir -p "$OUT_BPF/tools/build" "$OUT_BPF/tools/sbin"
+  mkdir -p "$OUT_BPF/tools/build/libbpf/sharedobjs" "$OUT_BPF/tools/build/libbpf/staticobjs"
+  mkdir -p "$OUT_BPF/tools/build/resolve_btfids"
+
+  # Let selftests/bpf Makefile build its own tools/build layout
+  make -C "$LINUX_ROOT/tools/testing/selftests/bpf" \
+    O="$O" OUTPUT="$OUT_BPF" \
+    KHDR_INCLUDES="$KHDR" \
+    $CLANG_ARG \
+    $MAKE_FULL_ARGS \
+    -j"$JOBS" "$OUT_BPF/tools/sbin/bpftool" "$OUT_BPF/tools/build/resolve_btfids/resolve_btfids" 2>&1 | tee "$O/build.tools.selftests-bpf.tools.log"
+
+  # [fix] reuse kernel-built resolve_btfids (objtree) to satisfy selftests/test_kmods (Error 127)
+  [ -f "$OUT_BPF/tools/build/libbpf/sharedobjs/libbpf-in.o" ] || {
+    echo "ERROR: missing $OUT_BPF/tools/build/libbpf/sharedobjs/libbpf-in.o" >&2; exit 2; }
   [ -f "$OUT_BPF/tools/build/libbpf/libbpf.so" ] || {
     echo "ERROR: missing $OUT_BPF/tools/build/libbpf/libbpf.so" >&2; exit 2; }
-
-  echo "[build] prebuild: resolve_btfids into OUT_BPF/tools/build/resolve_btfids"
-  mkdir -p "$OUT_BPF/tools/build/resolve_btfids"
-  make -C "$LINUX_ROOT/tools/bpf/resolve_btfids" \
-    O="$O" OUTPUT="$OUT_BPF/tools/build/resolve_btfids/" \
-    -j"$JOBS" 2>&1 | tee "$O/build.tools.resolve_btfids.log"
   [ -x "$OUT_BPF/tools/build/resolve_btfids/resolve_btfids" ] || {
     echo "ERROR: missing $OUT_BPF/tools/build/resolve_btfids/resolve_btfids" >&2; exit 2; }
 
-  mkdir -p "$OUT_BPF/tools/sbin"
   cp -f "$OUT_BPF/tools/build/resolve_btfids/resolve_btfids" "$OUT_BPF/tools/sbin/" || true
+
+
+  echo "[build] prime: vmlinux.h (serial)"
+  mkdir -p "$OUT_BPF/tools/include"
+  rm -f "$OUT_BPF/tools/include/vmlinux.h"
+  make -C "$LINUX_ROOT/tools/testing/selftests/bpf" \
+    O="$O" OUTPUT="$OUT_BPF" \
+    KHDR_INCLUDES="$KHDR" \
+    VMLINUX_BTF="$O/vmlinux" \
+    BPFTOOL="$OUT_BPF/tools/sbin/bpftool" \
+    $CLANG_ARG \
+    -j1 "$OUT_BPF/tools/include/vmlinux.h" 2>&1 | tee "$O/build.prime.vmlinux_h.log"
+
+  # [guard] ensure vmlinux.h exists and symlink is present (avoid CP/cannot-stat races)
+  [ -f "$OUT_BPF/tools/include/vmlinux.h" ] || { echo "ERROR: missing $OUT_BPF/tools/include/vmlinux.h after prime" >&2; exit 2; }
+  ln -sf "$OUT_BPF/tools/include/vmlinux.h" "$OUT_BPF/vmlinux.h"
+  # [prime] export as $OUT_BPF/vmlinux.h for Makefile CP path
+  # If caller overrides VMLINUX_H path, keep it synced too.
+  if [ "$VMLINUX_H" != "$OUT_BPF/vmlinux.h" ]; then
+    ln -sf "$OUT_BPF/tools/include/vmlinux.h" "$VMLINUX_H"
+  fi
+  VMLINUX_H_ARG="VMLINUX_H=$VMLINUX_H"
+
+
+
+
 
   make -C "$LINUX_ROOT/tools/testing/selftests/bpf" \
     O="$O" OUTPUT="$OUT_BPF" \
     KHDR_INCLUDES="$KHDR" \
     VMLINUX_BTF="$O/vmlinux" \
-    VMLINUX_H="$VMLINUX_H" \
+    RESOLVE_BTFIDS="$RESOLVE_BTFIDS_OBJ" \
     BPFTOOL="$OUT_BPF/tools/sbin/bpftool" \
     $CLANG_ARG \
-    BPF_CFLAGS="$orig" \
+    BPF_CFLAGS="$orig -D__BPF__ -D__BPF_FEATURE_ADDR_SPACE_CAST" \
     $MAKE_FULL_ARGS -j"$JOBS" 2>&1 | tee "$O/build.selftests.bpf.log"
 fi
 
