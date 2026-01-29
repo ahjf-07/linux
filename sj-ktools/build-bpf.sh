@@ -14,14 +14,14 @@ usage: $0 [-l] [-s] [-S "path1 path2 ..."] [-c|-m] [-i] [-j N] [-r linux_root] [
   -i : incremental (skip build steps if targets are up to date)
   -j : jobs (default: nproc)
   -r : kernel source tree root (default: pwd)
-  -o : output dir (default: <linux_root>/../out/full-{gcc,clang})
+  -o : output dir (default: <linux_root>/../out/full-clang)
   -K : kernel only (skip selftests/bpf)
   -T : tests only (skip kernel build)
 USAGE
   exit 1
 }
 
-LLVM=0
+LLVM=1
 SPARSE=0
 SPARSE_SUBTREES=""
 CLEAN=0
@@ -70,11 +70,7 @@ case "$ARCH" in
 esac
 
 if [ -z "$O" ]; then
-  if [ "$LLVM" -eq 1 ]; then
-    O="$LINUX_ROOT/../out/full-clang"
-  else
-    O="$LINUX_ROOT/../out/full-gcc"
-  fi
+  O="$LINUX_ROOT/../out/full-clang"
 fi
 
 O=$(realpath -m "$O")
@@ -85,10 +81,30 @@ echo "[cfg] O=$O LLVM=$LLVM SPARSE=$SPARSE CLEAN=$CLEAN MRPROPER=$MRPROPER INCRE
 
 MAKE_FULL_ARGS=""
 
-# ---- toolchain selection (static llvm/clang-20) + non-interactive Kconfig ----
+# ---- LLVM toolchain guard (>= 20) + non-interactive Kconfig ----
 export KCONFIG_NONINTERACTIVE=1
 
 if [ "$LLVM" -eq 1 ]; then
+  CLANG_VER="${CLANG_VER:-20}"
+  if [ "$CLANG_VER" -lt 20 ]; then
+    echo "ERROR: LLVM toolchain must be >= 20 (CLANG_VER=$CLANG_VER)" >&2
+    exit 2
+  fi
+  if [ -n "${CC:-}" ]; then
+    _cc_ver=$(echo "$CC" | sed -n 's/.*clang-*\([0-9][0-9]*\)$/\1/p')
+    if [ -z "$_cc_ver" ] || [ "$_cc_ver" -lt 20 ]; then
+      echo "ERROR: CC must be clang-20+ (got: $CC)" >&2
+      exit 2
+    fi
+  fi
+  if [ -n "${LD:-}" ]; then
+    _lld_ver=$(echo "$LD" | sed -n 's/.*ld.lld-*\([0-9][0-9]*\)$/\1/p')
+    if [ -z "$_lld_ver" ] || [ "$_lld_ver" -lt 20 ]; then
+      echo "ERROR: LD must be ld.lld-20+ (got: $LD)" >&2
+      exit 2
+    fi
+  fi
+
   # 严禁使用动态探测，直接对齐 auto.conf.cmd 的要求
   export LLVM=1
   export CC="/usr/bin/clang-20"
@@ -114,9 +130,6 @@ if [ "$LLVM" -eq 1 ]; then
   MAKE_FULL_ARGS="$MAKE_FULL_ARGS LLVM=1 LLVM_IAS=1"
   MAKE_FULL_ARGS="$MAKE_FULL_ARGS CC=$CC_BIN LD=$LLD_BIN NM=$NM_BIN AR=$AR_BIN OBJCOPY=$OBJCOPY_BIN"
   MAKE_FULL_ARGS="$MAKE_FULL_ARGS HOSTCC=$HOSTCC_BIN HOSTCXX=$HOSTCXX_BIN"
-else
-  # gcc path
-  MAKE_FULL_ARGS="$MAKE_FULL_ARGS CC=${CC:-gcc} HOSTCC=${HOSTCC:-gcc}"
 fi
 
 MAKE_SPARSE_ARGS="$MAKE_FULL_ARGS C=1 CHECK=sparse"
@@ -291,7 +304,7 @@ if [ "$ONLY_KERNEL" -eq 0 ]; then
     RESOLVE_BTFIDS="$RESOLVE_BTFIDS_OBJ" \
     BPFTOOL="$OUT_BPF/tools/sbin/bpftool" \
     $CLANG_ARG \
-    BPF_CFLAGS="$orig -D__BPF__ -D__BPF_FEATURE_ADDR_SPACE_CAST" \
+    BPF_CFLAGS="$orig" \
     $MAKE_FULL_ARGS -j"$JOBS" 2>&1 | tee "$O/build.selftests.bpf.log"
 fi
 
