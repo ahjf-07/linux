@@ -16,7 +16,6 @@ Defaults:
 
 Options:
   -l  LLVM=1 (clang). default clang
-  -g  LLVM=0 (gcc)
   -s  enable sparse (passed to build-bpf.sh)
   -S  sparse subtrees list (passed to build-bpf.sh)
   -o  outdir (default: ../out/full-clang)
@@ -122,10 +121,9 @@ while [ $# -gt 0 ]; do
 done
 set -- $_keep "$@"
 
-while getopts "lgsS:o:t:e:cmFUf:P:M:KT" opt; do
+while getopts "lsS:o:t:e:cmFUf:P:M:KT" opt; do
   case "$opt" in
     l) LLVM=1 ;;
-    g) LLVM=0 ;;
     s) SPARSE=1 ;;
     S) SPARSE_SUBTREES="$OPTARG" ;;
     o) O="$OPTARG" ;;
@@ -160,43 +158,16 @@ if [ "$KERNEL_ONLY" -eq 1 ]; then
 fi
 
 if [ -z "$O" ]; then
-  if [ "$LLVM" -eq 1 ]; then
-    O="$LINUX_ROOT/../out/full-clang"
-  else
-    O="$LINUX_ROOT/../out/full-gcc"
-  fi
+  O="$LINUX_ROOT/../out/full-clang"
 fi
 O="$(realpath -m "$O")"
 mkdir -p "$O"
-
-# ---- LLVM toolchain guard (>= 20) ----
-if [ "$LLVM" -eq 1 ]; then
-  CLANG_VER="${CLANG_VER:-20}"
-  if [ "$CLANG_VER" -lt 20 ]; then
-    echo "ERROR: LLVM toolchain must be >= 20 (CLANG_VER=$CLANG_VER)" >&2
-    exit 2
-  fi
-  if [ -n "${CC:-}" ]; then
-    _cc_ver=$(echo "$CC" | sed -n 's/.*clang-*\([0-9][0-9]*\)$/\1/p')
-    if [ -z "$_cc_ver" ] || [ "$_cc_ver" -lt 20 ]; then
-      echo "ERROR: CC must be clang-20+ (got: $CC)" >&2
-      exit 2
-    fi
-  fi
-  if [ -n "${LD:-}" ]; then
-    _lld_ver=$(echo "$LD" | sed -n 's/.*ld.lld-*\([0-9][0-9]*\)$/\1/p')
-    if [ -z "$_lld_ver" ] || [ "$_lld_ver" -lt 20 ]; then
-      echo "ERROR: LD must be ld.lld-20+ (got: $LD)" >&2
-      exit 2
-    fi
-  fi
-fi
 
 STATE_DIR="${AUTO_BPF_STATE_DIR:-$LINUX_ROOT/../out/auto-bpf-state}"
 mkdir -p "$STATE_DIR"
 
 ARCH="$(uname -m)"
-KEY="${ARCH}.$([ "$LLVM" -eq 1 ] && echo clang || echo gcc)"
+KEY="${ARCH}.clang"
 
 PREV_DIR="$STATE_DIR/prev/$KEY"
 BASE_DIR="$STATE_DIR/baseline/$KEY"
@@ -389,15 +360,13 @@ head_after="$(git rev-parse HEAD)"
 
 if [ "$NO_BUILD" -eq 0 ]; then
   if [ ! -f "$O/.config" ]; then
-    cargs=""
-    [ "$LLVM" -eq 1 ] && cargs="$cargs -l" || cargs="$cargs -g"
+    cargs="-l"
     [ "$CLEAN" -eq 1 ] && cargs="$cargs -c"
     [ "$MRPROPER" -eq 1 ] && cargs="$cargs -m"
     run "\"$TOOL_DIR/config-bpf.sh\" $cargs -r \"$LINUX_ROOT\" -o \"$O\" |& tee \"$RUN_DIR/config.log\""
   fi
 
-  bargs=""
-  [ "$LLVM" -eq 1 ] && bargs="$bargs -l" || bargs="$bargs"   # build 没 -g 就不传
+  bargs="-l"
   [ "$SPARSE" -eq 1 ] && bargs="$bargs -s"
   [ -n "$SPARSE_SUBTREES" ] && bargs="$bargs -S \"$SPARSE_SUBTREES\""
 # build-bpf.sh: -c/-m 互斥；-m 在 auto 里已经做了 rm -rf O + rm -f O/.config + 重新 config
