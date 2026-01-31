@@ -471,6 +471,7 @@ else
 fi
 
 WARN_LIST="$RUN_DIR/scan.warnings.txt"
+ERR_LIST="$RUN_DIR/scan.errors.txt"
 SPARSE_LIST="$RUN_DIR/scan.sparse.txt"
 if [ "$NO_SCAN" -eq 0 ]; then
   awk '
@@ -483,6 +484,16 @@ if [ "$NO_SCAN" -eq 0 ]; then
     /^====/ { if (in) in=0 }
     in && /^[0-9]+:/ { print normalize($0) }
   ' "$RUN_DIR/scan.txt" >"$WARN_LIST" 2>/dev/null || true
+  awk '
+    function normalize(line) {
+      sub(/^[0-9]+:/, "", line);
+      gsub(/:[0-9]+(:[0-9]+)?:/, ":", line);
+      return line;
+    }
+    /^==== errors \(first / { in=1; next }
+    /^====/ { if (in) in=0 }
+    in && /^[0-9]+:/ { print normalize($0) }
+  ' "$RUN_DIR/scan.txt" >"$ERR_LIST" 2>/dev/null || true
   awk '
     function normalize(line) {
       sub(/^[0-9]+:/, "", line);
@@ -533,6 +544,7 @@ fi
 build_essentials() {
   out="$1"
   scan="$RUN_DIR/scan.txt"
+  topn="${AUTO_BPF_TOPN:-50}"
 
   {
     echo "## build (filtered)"
@@ -596,6 +608,36 @@ build_essentials() {
       }
     ' "$scan" 2>/dev/null || true
 
+    echo
+    echo "## current errors (top ${topn})"
+    if [ -s "$ERR_LIST" ]; then
+      awk -v topn="$topn" '
+        { counts[$0]++ }
+        END {
+          for (line in counts) {
+            printf "%6d  %s\n", counts[line], line
+          }
+        }
+      ' "$ERR_LIST" | sort -rn | head -n "$topn"
+    else
+      echo "(none)"
+    fi
+
+    echo
+    echo "## current warnings (top ${topn})"
+    if [ -s "$WARN_LIST" ]; then
+      awk -v topn="$topn" '
+        { counts[$0]++ }
+        END {
+          for (line in counts) {
+            printf "%6d  %s\n", counts[line], line
+          }
+        }
+      ' "$WARN_LIST" | sort -rn | head -n "$topn"
+    else
+      echo "(none)"
+    fi
+
     if [ -f "$BASE_DIR/scan.warnings.txt" ] && [ -f "$WARN_LIST" ]; then
       diff -u "$BASE_DIR/scan.warnings.txt" "$WARN_LIST" >"$RUN_DIR/diff.warnings.vs-baseline.txt" || true
       if [ -s "$RUN_DIR/diff.warnings.vs-baseline.txt" ]; then
@@ -610,9 +652,25 @@ build_essentials() {
 
 sparses_essentials() {
   out="$1"
+  topn="${AUTO_BPF_TOPN:-50}"
   {
     echo "## sparse diagnostics"
     cat "$SPARSE_LIST" 2>/dev/null || true
+
+    echo
+    echo "## sparse diagnostics (top ${topn})"
+    if [ -s "$SPARSE_LIST" ]; then
+      awk -v topn="$topn" '
+        { counts[$0]++ }
+        END {
+          for (line in counts) {
+            printf "%6d  %s\n", counts[line], line
+          }
+        }
+      ' "$SPARSE_LIST" | sort -rn | head -n "$topn"
+    else
+      echo "(none)"
+    fi
 
     if [ -f "$BASE_DIR/scan.sparse.txt" ] && [ -f "$SPARSE_LIST" ]; then
       diff -u "$BASE_DIR/scan.sparse.txt" "$SPARSE_LIST" >"$RUN_DIR/diff.sparse.vs-baseline.txt" || true
@@ -890,8 +948,9 @@ MAIL="$RUN_DIR/mail.result.mbox"
     echo "-- current (substantive summary) --"
     cat "$BUILD_ESS" || true
     echo
-    echo "-- full build result --"
-    cat "$BUILD_TXT" || true
+    echo "-- build artifacts (no full logs in email) --"
+    echo "build summary : $BUILD_ESS"
+    echo "build bundle  : $BUILD_TXT"
   fi
   echo
   echo "== TEST SUMMARY =="
@@ -908,8 +967,11 @@ MAIL="$RUN_DIR/mail.result.mbox"
     echo "-- current (substantive summary) --"
     cat "$TESTS_ESS" || true
     echo
-    echo "-- full tests result --"
-    cat "$TESTS_TXT" || true
+    echo "-- test artifacts (no full logs in email) --"
+    echo "tests summary : $TESTS_ESS"
+    echo "tests bundle  : $TESTS_TXT"
+    echo "tests json    : $TEST_JSON_DST"
+    echo "tests log     : $TEST_LOG_DST"
   fi
   echo
   echo "== SPARSE SUMMARY =="
@@ -926,8 +988,9 @@ MAIL="$RUN_DIR/mail.result.mbox"
     echo "-- current (substantive summary) --"
     cat "$SPARSE_ESS" || true
     echo
-    echo "-- full sparse result --"
-    cat "$SPARSE_TXT" || true
+    echo "-- sparse artifacts (no full logs in email) --"
+    echo "sparse summary: $SPARSE_ESS"
+    echo "sparse bundle : $SPARSE_TXT"
   fi
   echo
   echo "Artifacts:"

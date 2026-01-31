@@ -84,16 +84,23 @@ echo "==== bpf test_progs summary (json) ===="
 if [ -z "$json_files" ]; then
   echo "(no json summary files found under $json_dir)"
 elif command -v python3 >/dev/null 2>&1; then
-  python3 - <<'PY' $json_files
+  TOPN="${AUTO_BPF_TEST_TOPN:-50}"
+  python3 - <<'PY' "$TOPN" $json_files
 import json
 import sys
 from collections import Counter
+
+topn = 50
+try:
+    topn = int(sys.argv[1])
+except Exception:
+    topn = 50
 
 totals = {"success": 0, "success_subtest": 0, "skipped": 0, "failed": 0}
 fail_tests = Counter()
 fail_subtests = Counter()
 
-for path in sys.argv[1:]:
+for path in sys.argv[2:]:
     try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
@@ -119,7 +126,7 @@ print(f"success_subtest: {totals['success_subtest']}")
 print(f"skipped        : {totals['skipped']}")
 print(f"failed         : {totals['failed']}")
 
-def dump_top(title, counter, n=50):
+def dump_top(title, counter, n):
     print()
     print(title)
     if not counter:
@@ -128,8 +135,8 @@ def dump_top(title, counter, n=50):
     for name, count in counter.most_common(n):
         print(f"{count:4d}  {name}")
 
-dump_top("==== bpf failed tests (top 50) ====", fail_tests)
-dump_top("==== bpf failed subtests (top 50) ====", fail_subtests)
+dump_top(f"==== bpf failed tests (top {topn}) ====", fail_tests, topn)
+dump_top(f"==== bpf failed subtests (top {topn}) ====", fail_subtests, topn)
 PY
 else
   echo "(python3 not found; unable to parse json summaries)"
