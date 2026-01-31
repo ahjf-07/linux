@@ -84,6 +84,9 @@ FORCE=0
 NO_TEST=0
 NO_BUILD=0
 NO_SCAN=0
+BUILD_SKIPPED=0
+TEST_SKIPPED=0
+SPARSE_SKIPPED=0
 
 CLEAN=0
 MRPROPER=0
@@ -155,6 +158,22 @@ if [ "$KERNEL_ONLY" -eq 1 ]; then
   echo "[auto] ONLY_KERNEL: disabling tests and scan" >&2
   NO_TEST=1
   NO_SCAN=1
+fi
+
+if [ "$NO_BUILD" -eq 1 ] && [ "$NO_TEST" -eq 1 ]; then
+  echo "ERROR: --no-build and --no-test cannot be used together" >&2
+  exit 2
+fi
+
+if [ "$NO_BUILD" -eq 1 ]; then
+  BUILD_SKIPPED=1
+  NO_SCAN=1
+fi
+if [ "$NO_TEST" -eq 1 ]; then
+  TEST_SKIPPED=1
+fi
+if [ "$SPARSE" -eq 0 ] || [ "$NO_SCAN" -eq 1 ]; then
+  SPARSE_SKIPPED=1
 fi
 
 if [ -z "$O" ]; then
@@ -453,26 +472,28 @@ fi
 
 WARN_LIST="$RUN_DIR/scan.warnings.txt"
 SPARSE_LIST="$RUN_DIR/scan.sparse.txt"
-awk '
-  function normalize(line) {
-    sub(/^[0-9]+:/, "", line);
-    gsub(/:[0-9]+(:[0-9]+)?:/, ":", line);
-    return line;
-  }
-  /^==== warnings \(first / { in=1; next }
-  /^====/ { if (in) in=0 }
-  in && /^[0-9]+:/ { print normalize($0) }
-' "$RUN_DIR/scan.txt" >"$WARN_LIST" 2>/dev/null || true
-awk '
-  function normalize(line) {
-    sub(/^[0-9]+:/, "", line);
-    gsub(/:[0-9]+(:[0-9]+)?:/, ":", line);
-    return line;
-  }
-  /^==== sparse diagnostics \(first / { in=1; next }
-  /^====/ { if (in) in=0 }
-  in && /^[0-9]+:/ { print normalize($0) }
-' "$RUN_DIR/scan.txt" >"$SPARSE_LIST" 2>/dev/null || true
+if [ "$NO_SCAN" -eq 0 ]; then
+  awk '
+    function normalize(line) {
+      sub(/^[0-9]+:/, "", line);
+      gsub(/:[0-9]+(:[0-9]+)?:/, ":", line);
+      return line;
+    }
+    /^==== warnings \(first / { in=1; next }
+    /^====/ { if (in) in=0 }
+    in && /^[0-9]+:/ { print normalize($0) }
+  ' "$RUN_DIR/scan.txt" >"$WARN_LIST" 2>/dev/null || true
+  awk '
+    function normalize(line) {
+      sub(/^[0-9]+:/, "", line);
+      gsub(/:[0-9]+(:[0-9]+)?:/, ":", line);
+      return line;
+    }
+    /^==== sparse diagnostics \(first / { in=1; next }
+    /^====/ { if (in) in=0 }
+    in && /^[0-9]+:/ { print normalize($0) }
+  ' "$RUN_DIR/scan.txt" >"$SPARSE_LIST" 2>/dev/null || true
+fi
 
 TEST_LOG_SRC="$LINUX_ROOT/.kselftest-out/bpf.selftests.log"
 TEST_LOG_DST="$RUN_DIR/bpf.selftests.log"
@@ -509,24 +530,20 @@ else
   echo "[auto] --no-test: skip tests" >"$SUMM_LOG"
 fi
 
-essentials() {
+build_essentials() {
   out="$1"
   scan="$RUN_DIR/scan.txt"
-  summ="$RUN_DIR/bpf.summ.txt"
 
   {
-    echo "== SUBSTANTIVE SUMMARY =="
-    echo
-
-    echo "## build + sparse (filtered)"
+    echo "## build (filtered)"
 
     awk '
       function reset_counts() {
-        err=0; warn=0; sp=0;
+        err=0; warn=0;
       }
       function flush_summary() {
         if (sum != "") {
-          if ((err + warn + sp) > 0) {
+          if ((err + warn) > 0) {
             printf "%s\n", sum;
           }
           sum="";
@@ -559,21 +576,18 @@ essentials() {
       }
 
       in_sum==1 {
+        if ($0 ~ /^sparse_effective[[:space:]]*:/) { next }
+        if ($0 ~ /^sparse[[:space:]]*:/) { next }
         sum = sum $0 "\n";
         if ($0 ~ /^errors_effective[[:space:]]*:/) { err=$NF + 0; }
         else if ($0 ~ /^errors[[:space:]]*:/) { err=$NF + 0; }
         else if ($0 ~ /^warnings[[:space:]]*:/) { warn=$NF + 0; }
-        else if ($0 ~ /^sparse_effective[[:space:]]*:/) { sp=$NF + 0; }
-        else if ($0 ~ /^sparse[[:space:]]*:/) { sp=$NF + 0; }
         if ($0 ~ /^$/) { in_sum=0; flush_summary(); }
         next
       }
 
       /^==== errors \(first /           { flush_list(sec, list); sec="errors"; list=""; next }
       /^==== warnings \(first /         { flush_list(sec, list); sec=""; list=""; next }
-      /^==== sparse diagnostics \(first /{ flush_list(sec, list); sec=""; list=""; next }
-      /^==== sparse diagnostics \(top messages\) ====$/ { flush_list(sec, list); sec=""; list=""; next }
-
       (sec!="") && ($0 ~ /^[0-9]+:/) { list = list normalize_line($0) "\n"; next }
 
       END{
@@ -591,6 +605,15 @@ essentials() {
       fi
     fi
 
+  } >"$out"
+}
+
+sparses_essentials() {
+  out="$1"
+  {
+    echo "## sparse diagnostics"
+    cat "$SPARSE_LIST" 2>/dev/null || true
+
     if [ -f "$BASE_DIR/scan.sparse.txt" ] && [ -f "$SPARSE_LIST" ]; then
       diff -u "$BASE_DIR/scan.sparse.txt" "$SPARSE_LIST" >"$RUN_DIR/diff.sparse.vs-baseline.txt" || true
       if [ -s "$RUN_DIR/diff.sparse.vs-baseline.txt" ]; then
@@ -599,76 +622,250 @@ essentials() {
         sed -n '1,200p' "$RUN_DIR/diff.sparse.vs-baseline.txt" || true
       fi
     fi
-
-    echo
-    echo "## selftests (bpf)"
-    cat "$summ" 2>/dev/null || true
   } >"$out"
 }
-bundle() {
+
+tests_essentials() {
+  out="$1"
+  {
+    echo "## selftests (bpf)"
+    cat "$SUMM_LOG" 2>/dev/null || true
+  } >"$out"
+}
+
+bundle_build() {
+  out="$1"
+  {
+    echo "## meta"
+    cat "$RUN_DIR/meta.txt" || true
+    echo
+    echo "## build"
+    cat "$RUN_DIR/build.all.log" || true
+    echo
+    echo "## warnings"
+    cat "$WARN_LIST" 2>/dev/null || true
+  } >"$out"
+}
+
+bundle_sparse() {
   out="$1"
   {
     echo "## meta"
     cat "$RUN_DIR/meta.txt" || true
     echo
     echo "## scan"
-    cat "$RUN_DIR/scan.txt" || true
+    cat "$RUN_DIR/scan.txt" 2>/dev/null || true
+    echo
+    echo "## sparse diagnostics"
+    cat "$SPARSE_LIST" 2>/dev/null || true
+  } >"$out"
+}
+
+bundle_tests() {
+  out="$1"
+  {
+    echo "## meta"
+    cat "$RUN_DIR/meta.txt" || true
     echo
     echo "## bpf summary"
     cat "$RUN_DIR/bpf.summ.txt" || true
   } >"$out"
 }
 
-THIS_TXT="$RUN_DIR/result.txt"
-bundle "$THIS_TXT"
+BUILD_TXT="$RUN_DIR/result.build.txt"
+SPARSE_TXT="$RUN_DIR/result.sparse.txt"
+TESTS_TXT="$RUN_DIR/result.tests.txt"
+bundle_build "$BUILD_TXT"
+bundle_sparse "$SPARSE_TXT"
+bundle_tests "$TESTS_TXT"
 
-THIS_ESS="$RUN_DIR/essentials.txt"
-essentials "$THIS_ESS"
-
-PREV_ESS="$PREV_DIR/essentials.txt"
-BASE_ESS="$BASE_DIR/essentials.txt"
-DIFF_PREV_ESS="$RUN_DIR/diff.substantive.vs-prev.txt"
-DIFF_BASE_ESS="$RUN_DIR/diff.substantive.vs-baseline.txt"
-
-if [ -f "$PREV_ESS" ]; then
-  diff -u "$PREV_ESS" "$THIS_ESS" >"$DIFF_PREV_ESS" || true; [ -s "$DIFF_PREV_ESS" ] || echo "(no substantive diff vs prev)" >"$DIFF_PREV_ESS"
+BUILD_ESS="$RUN_DIR/build.essentials.txt"
+SPARSE_ESS="$RUN_DIR/sparse.essentials.txt"
+TESTS_ESS="$RUN_DIR/tests.essentials.txt"
+if [ "$BUILD_SKIPPED" -eq 0 ]; then
+  build_essentials "$BUILD_ESS"
 else
-  echo "(no previous substantive summary)" >"$DIFF_PREV_ESS"
+  echo "(build skipped)" >"$BUILD_ESS"
+fi
+if [ "$SPARSE_SKIPPED" -eq 0 ]; then
+  sparses_essentials "$SPARSE_ESS"
+else
+  echo "(sparse skipped)" >"$SPARSE_ESS"
+fi
+if [ "$TEST_SKIPPED" -eq 0 ]; then
+  tests_essentials "$TESTS_ESS"
+else
+  echo "(tests skipped)" >"$TESTS_ESS"
 fi
 
-if [ -f "$BASE_ESS" ]; then
-  diff -u "$BASE_ESS" "$THIS_ESS" >"$DIFF_BASE_ESS" || true; [ -s "$DIFF_BASE_ESS" ] || echo "(no substantive diff vs baseline)" >"$DIFF_BASE_ESS"
+PREV_BUILD_ESS="$PREV_DIR/build.essentials.txt"
+BASE_BUILD_ESS="$BASE_DIR/build.essentials.txt"
+DIFF_PREV_BUILD_ESS="$RUN_DIR/diff.build.vs-prev.txt"
+DIFF_BASE_BUILD_ESS="$RUN_DIR/diff.build.vs-baseline.txt"
+
+if [ "$BUILD_SKIPPED" -eq 0 ]; then
+  if [ -f "$PREV_BUILD_ESS" ]; then
+    diff -u "$PREV_BUILD_ESS" "$BUILD_ESS" >"$DIFF_PREV_BUILD_ESS" || true
+    [ -s "$DIFF_PREV_BUILD_ESS" ] || echo "(no substantive diff vs prev)" >"$DIFF_PREV_BUILD_ESS"
+  else
+    echo "(no previous build summary)" >"$DIFF_PREV_BUILD_ESS"
+  fi
+
+  if [ -f "$BASE_BUILD_ESS" ]; then
+    diff -u "$BASE_BUILD_ESS" "$BUILD_ESS" >"$DIFF_BASE_BUILD_ESS" || true
+    [ -s "$DIFF_BASE_BUILD_ESS" ] || echo "(no substantive diff vs baseline)" >"$DIFF_BASE_BUILD_ESS"
+  else
+    echo "(no build baseline yet)" >"$DIFF_BASE_BUILD_ESS"
+  fi
 else
-  echo "(no baseline yet)" >"$DIFF_BASE_ESS"
+  echo "(build skipped)" >"$DIFF_PREV_BUILD_ESS"
+  echo "(build skipped)" >"$DIFF_BASE_BUILD_ESS"
 fi
 
-PREV_TXT="$PREV_DIR/result.txt"
-BASE_TXT="$BASE_DIR/result.txt"
-DIFF_PREV="$RUN_DIR/diff.vs-prev.txt"
-DIFF_BASE="$RUN_DIR/diff.vs-baseline.txt"
+PREV_TESTS_ESS="$PREV_DIR/tests.essentials.txt"
+BASE_TESTS_ESS="$BASE_DIR/tests.essentials.txt"
+DIFF_PREV_TESTS_ESS="$RUN_DIR/diff.tests.vs-prev.txt"
+DIFF_BASE_TESTS_ESS="$RUN_DIR/diff.tests.vs-baseline.txt"
 
-if [ -f "$PREV_TXT" ]; then
-  diff -u "$PREV_TXT" "$THIS_TXT" >"$DIFF_PREV" || true
+PREV_SPARSE_ESS="$PREV_DIR/sparse.essentials.txt"
+BASE_SPARSE_ESS="$BASE_DIR/sparse.essentials.txt"
+DIFF_PREV_SPARSE_ESS="$RUN_DIR/diff.sparse.vs-prev.txt"
+DIFF_BASE_SPARSE_ESS="$RUN_DIR/diff.sparse.vs-baseline.txt"
+
+if [ "$SPARSE_SKIPPED" -eq 0 ]; then
+  if [ -f "$PREV_SPARSE_ESS" ]; then
+    diff -u "$PREV_SPARSE_ESS" "$SPARSE_ESS" >"$DIFF_PREV_SPARSE_ESS" || true
+    [ -s "$DIFF_PREV_SPARSE_ESS" ] || echo "(no substantive diff vs prev)" >"$DIFF_PREV_SPARSE_ESS"
+  else
+    echo "(no previous sparse summary)" >"$DIFF_PREV_SPARSE_ESS"
+  fi
+
+  if [ -f "$BASE_SPARSE_ESS" ]; then
+    diff -u "$BASE_SPARSE_ESS" "$SPARSE_ESS" >"$DIFF_BASE_SPARSE_ESS" || true
+    [ -s "$DIFF_BASE_SPARSE_ESS" ] || echo "(no substantive diff vs baseline)" >"$DIFF_BASE_SPARSE_ESS"
+  else
+    echo "(no sparse baseline yet)" >"$DIFF_BASE_SPARSE_ESS"
+  fi
 else
-  echo "(no previous result)" >"$DIFF_PREV"
+  echo "(sparse skipped)" >"$DIFF_PREV_SPARSE_ESS"
+  echo "(sparse skipped)" >"$DIFF_BASE_SPARSE_ESS"
 fi
 
-if [ -f "$BASE_TXT" ]; then
-  diff -u "$BASE_TXT" "$THIS_TXT" >"$DIFF_BASE" || true
+if [ "$TEST_SKIPPED" -eq 0 ]; then
+  if [ -f "$PREV_TESTS_ESS" ]; then
+    diff -u "$PREV_TESTS_ESS" "$TESTS_ESS" >"$DIFF_PREV_TESTS_ESS" || true
+    [ -s "$DIFF_PREV_TESTS_ESS" ] || echo "(no substantive diff vs prev)" >"$DIFF_PREV_TESTS_ESS"
+  else
+    echo "(no previous test summary)" >"$DIFF_PREV_TESTS_ESS"
+  fi
+
+  if [ -f "$BASE_TESTS_ESS" ]; then
+    diff -u "$BASE_TESTS_ESS" "$TESTS_ESS" >"$DIFF_BASE_TESTS_ESS" || true
+    [ -s "$DIFF_BASE_TESTS_ESS" ] || echo "(no substantive diff vs baseline)" >"$DIFF_BASE_TESTS_ESS"
+  else
+    echo "(no tests baseline yet)" >"$DIFF_BASE_TESTS_ESS"
+  fi
 else
-  echo "(no pinned baseline yet)" >"$DIFF_BASE"
+  echo "(tests skipped)" >"$DIFF_PREV_TESTS_ESS"
+  echo "(tests skipped)" >"$DIFF_BASE_TESTS_ESS"
 fi
 
-cp -f "$THIS_TXT" "$PREV_TXT"
-cp -f "$THIS_ESS" "$PREV_ESS"
-cp -f "$RUN_DIR/scan.txt" "$PREV_DIR/scan.txt" 2>/dev/null || true
-cp -f "$WARN_LIST" "$PREV_DIR/scan.warnings.txt" 2>/dev/null || true
-cp -f "$SPARSE_LIST" "$PREV_DIR/scan.sparse.txt" 2>/dev/null || true
-if [ "$RESET_BASELINE" -eq 1 ] || [ ! -f "$BASE_TXT" ]; then
-  cp -f "$THIS_TXT" "$BASE_TXT"
-  cp -f "$THIS_ESS" "$BASE_ESS"
-  cp -f "$WARN_LIST" "$BASE_DIR/scan.warnings.txt" 2>/dev/null || true
-  cp -f "$SPARSE_LIST" "$BASE_DIR/scan.sparse.txt" 2>/dev/null || true
+PREV_BUILD_TXT="$PREV_DIR/result.build.txt"
+BASE_BUILD_TXT="$BASE_DIR/result.build.txt"
+DIFF_PREV_BUILD="$RUN_DIR/diff.build.full.vs-prev.txt"
+DIFF_BASE_BUILD="$RUN_DIR/diff.build.full.vs-baseline.txt"
+
+if [ "$BUILD_SKIPPED" -eq 0 ]; then
+  if [ -f "$PREV_BUILD_TXT" ]; then
+    diff -u "$PREV_BUILD_TXT" "$BUILD_TXT" >"$DIFF_PREV_BUILD" || true
+  else
+    echo "(no previous build result)" >"$DIFF_PREV_BUILD"
+  fi
+
+  if [ -f "$BASE_BUILD_TXT" ]; then
+    diff -u "$BASE_BUILD_TXT" "$BUILD_TXT" >"$DIFF_BASE_BUILD" || true
+  else
+    echo "(no build baseline yet)" >"$DIFF_BASE_BUILD"
+  fi
+else
+  echo "(build skipped)" >"$DIFF_PREV_BUILD"
+  echo "(build skipped)" >"$DIFF_BASE_BUILD"
+fi
+
+PREV_TESTS_TXT="$PREV_DIR/result.tests.txt"
+BASE_TESTS_TXT="$BASE_DIR/result.tests.txt"
+DIFF_PREV_TESTS="$RUN_DIR/diff.tests.full.vs-prev.txt"
+DIFF_BASE_TESTS="$RUN_DIR/diff.tests.full.vs-baseline.txt"
+
+PREV_SPARSE_TXT="$PREV_DIR/result.sparse.txt"
+BASE_SPARSE_TXT="$BASE_DIR/result.sparse.txt"
+DIFF_PREV_SPARSE="$RUN_DIR/diff.sparse.full.vs-prev.txt"
+DIFF_BASE_SPARSE="$RUN_DIR/diff.sparse.full.vs-baseline.txt"
+
+if [ "$SPARSE_SKIPPED" -eq 0 ]; then
+  if [ -f "$PREV_SPARSE_TXT" ]; then
+    diff -u "$PREV_SPARSE_TXT" "$SPARSE_TXT" >"$DIFF_PREV_SPARSE" || true
+  else
+    echo "(no previous sparse result)" >"$DIFF_PREV_SPARSE"
+  fi
+
+  if [ -f "$BASE_SPARSE_TXT" ]; then
+    diff -u "$BASE_SPARSE_TXT" "$SPARSE_TXT" >"$DIFF_BASE_SPARSE" || true
+  else
+    echo "(no sparse baseline yet)" >"$DIFF_BASE_SPARSE"
+  fi
+else
+  echo "(sparse skipped)" >"$DIFF_PREV_SPARSE"
+  echo "(sparse skipped)" >"$DIFF_BASE_SPARSE"
+fi
+
+if [ "$TEST_SKIPPED" -eq 0 ]; then
+  if [ -f "$PREV_TESTS_TXT" ]; then
+    diff -u "$PREV_TESTS_TXT" "$TESTS_TXT" >"$DIFF_PREV_TESTS" || true
+  else
+    echo "(no previous tests result)" >"$DIFF_PREV_TESTS"
+  fi
+
+  if [ -f "$BASE_TESTS_TXT" ]; then
+    diff -u "$BASE_TESTS_TXT" "$TESTS_TXT" >"$DIFF_BASE_TESTS" || true
+  else
+    echo "(no tests baseline yet)" >"$DIFF_BASE_TESTS"
+  fi
+else
+  echo "(tests skipped)" >"$DIFF_PREV_TESTS"
+  echo "(tests skipped)" >"$DIFF_BASE_TESTS"
+fi
+
+if [ "$BUILD_SKIPPED" -eq 0 ]; then
+  cp -f "$BUILD_TXT" "$PREV_BUILD_TXT"
+  cp -f "$BUILD_ESS" "$PREV_BUILD_ESS"
+  cp -f "$RUN_DIR/scan.txt" "$PREV_DIR/scan.txt" 2>/dev/null || true
+  cp -f "$WARN_LIST" "$PREV_DIR/scan.warnings.txt" 2>/dev/null || true
+  if [ "$RESET_BASELINE" -eq 1 ] || [ ! -f "$BASE_BUILD_TXT" ]; then
+    cp -f "$BUILD_TXT" "$BASE_BUILD_TXT"
+    cp -f "$BUILD_ESS" "$BASE_BUILD_ESS"
+    cp -f "$WARN_LIST" "$BASE_DIR/scan.warnings.txt" 2>/dev/null || true
+  fi
+fi
+
+if [ "$SPARSE_SKIPPED" -eq 0 ]; then
+  cp -f "$SPARSE_TXT" "$PREV_SPARSE_TXT"
+  cp -f "$SPARSE_ESS" "$PREV_SPARSE_ESS"
+  cp -f "$SPARSE_LIST" "$PREV_DIR/scan.sparse.txt" 2>/dev/null || true
+  if [ "$RESET_BASELINE" -eq 1 ] || [ ! -f "$BASE_SPARSE_TXT" ]; then
+    cp -f "$SPARSE_TXT" "$BASE_SPARSE_TXT"
+    cp -f "$SPARSE_ESS" "$BASE_SPARSE_ESS"
+    cp -f "$SPARSE_LIST" "$BASE_DIR/scan.sparse.txt" 2>/dev/null || true
+  fi
+fi
+
+if [ "$TEST_SKIPPED" -eq 0 ]; then
+  cp -f "$TESTS_TXT" "$PREV_TESTS_TXT"
+  cp -f "$TESTS_ESS" "$PREV_TESTS_ESS"
+  if [ "$RESET_BASELINE" -eq 1 ] || [ ! -f "$BASE_TESTS_TXT" ]; then
+    cp -f "$TESTS_TXT" "$BASE_TESTS_TXT"
+    cp -f "$TESTS_ESS" "$BASE_TESTS_ESS"
+  fi
 fi
 
 SUBJ="[auto-bpf][$KEY] run done: ref_updated=$ref_updated force=$FORCE HEAD=$head_after"
@@ -679,17 +876,59 @@ MAIL="$RUN_DIR/mail.result.mbox"
   echo "To: $TO_EMAIL"
   echo "Subject: $SUBJ"
   echo
-  echo "== DIFF (substantive) vs PREV =="
-  sed -n '1,260p' "$DIFF_PREV_ESS" || true
+  echo "== BUILD SUMMARY =="
+  if [ "$BUILD_SKIPPED" -eq 1 ]; then
+    echo "build skipped"
+  else
+    echo
+    echo "-- diff (substantive) vs PREV --"
+    sed -n '1,260p' "$DIFF_PREV_BUILD_ESS" || true
+    echo
+    echo "-- diff (substantive) vs BASELINE --"
+    sed -n '1,260p' "$DIFF_BASE_BUILD_ESS" || true
+    echo
+    echo "-- current (substantive summary) --"
+    cat "$BUILD_ESS" || true
+    echo
+    echo "-- full build result --"
+    cat "$BUILD_TXT" || true
+  fi
   echo
-  echo "== DIFF (substantive) vs BASELINE =="
-  sed -n '1,260p' "$DIFF_BASE_ESS" || true
+  echo "== TEST SUMMARY =="
+  if [ "$TEST_SKIPPED" -eq 1 ]; then
+    echo "tests skipped"
+  else
+    echo
+    echo "-- diff (substantive) vs PREV --"
+    sed -n '1,260p' "$DIFF_PREV_TESTS_ESS" || true
+    echo
+    echo "-- diff (substantive) vs BASELINE --"
+    sed -n '1,260p' "$DIFF_BASE_TESTS_ESS" || true
+    echo
+    echo "-- current (substantive summary) --"
+    cat "$TESTS_ESS" || true
+    echo
+    echo "-- full tests result --"
+    cat "$TESTS_TXT" || true
+  fi
   echo
-  echo "== CURRENT (substantive summary) =="
-  cat "$THIS_ESS" || true
-  echo
-  echo "== FULL RESULT (meta + scan + test) =="
-  cat "$THIS_TXT" || true
+  echo "== SPARSE SUMMARY =="
+  if [ "$SPARSE_SKIPPED" -eq 1 ]; then
+    echo "sparse skipped"
+  else
+    echo
+    echo "-- diff (substantive) vs PREV --"
+    sed -n '1,260p' "$DIFF_PREV_SPARSE_ESS" || true
+    echo
+    echo "-- diff (substantive) vs BASELINE --"
+    sed -n '1,260p' "$DIFF_BASE_SPARSE_ESS" || true
+    echo
+    echo "-- current (substantive summary) --"
+    cat "$SPARSE_ESS" || true
+    echo
+    echo "-- full sparse result --"
+    cat "$SPARSE_TXT" || true
+  fi
   echo
   echo "Artifacts:"
   echo "  state dir: $STATE_DIR"
