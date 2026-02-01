@@ -502,9 +502,9 @@ if [ "$NO_SCAN" -eq 0 ]; then
       gsub(/:[0-9]+(:[0-9]+)?:/, ":", line);
       return line;
     }
-    /^==== warnings \(first / { in=1; next }
-    /^====/ { if (in) in=0 }
-    in && /^[0-9]+:/ { print normalize($0) }
+    /^==== warnings \(first / { flag=1; next }
+    /^====/ { if (flag) flag=0 }
+    flag && /^[0-9]+:/ { print normalize($0) }
   ' "$RUN_DIR/scan.txt" >"$WARN_LIST" 2>/dev/null || true
   awk '
     function normalize(line) {
@@ -512,9 +512,9 @@ if [ "$NO_SCAN" -eq 0 ]; then
       gsub(/:[0-9]+(:[0-9]+)?:/, ":", line);
       return line;
     }
-    /^==== errors \(first / { in=1; next }
-    /^====/ { if (in) in=0 }
-    in && /^[0-9]+:/ { print normalize($0) }
+    /^==== errors \(first / { flag=1; next }
+    /^====/ { if (flag) flag=0 }
+    flag && /^[0-9]+:/ { print normalize($0) }
   ' "$RUN_DIR/scan.txt" >"$ERR_LIST" 2>/dev/null || true
   awk '
     function normalize(line) {
@@ -522,9 +522,9 @@ if [ "$NO_SCAN" -eq 0 ]; then
       gsub(/:[0-9]+(:[0-9]+)?:/, ":", line);
       return line;
     }
-    /^==== sparse diagnostics \(first / { in=1; next }
-    /^====/ { if (in) in=0 }
-    in && /^[0-9]+:/ { print normalize($0) }
+    /^==== sparse diagnostics \(first / { flag=1; next }
+    /^====/ { if (flag) flag=0 }
+    flag && /^[0-9]+:/ { print normalize($0) }
   ' "${SPARSE_SCAN_TXT:-$RUN_DIR/scan.txt}" >"$SPARSE_LIST" 2>/dev/null || true
 
 fi

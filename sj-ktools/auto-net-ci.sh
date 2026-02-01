@@ -465,7 +465,30 @@ if [ "$NO_BUILD" -eq 0 ]; then
   if [ "$incremental_skipped" -eq 1 ] && [ -f "$RUN_DIR/scan.txt" ]; then
     echo "[auto] incremental build skipped; reuse scan.txt" >&2
   else
-    run "\"$TOOL_DIR/scan-nb.sh\" -e -w -s -n 50 -k net -r \"$LINUX_ROOT\" -o \"$O\" >\"$RUN_DIR/scan.txt\" 2>&1 || true"
+    run "\"$TOOL_DIR/scan-nb.sh\" -e -w -s -n 50 -k net -r \"$LINUX_ROOT\" -o \"$O\" \"$RUN_DIR/build.all.log\" >\"$RUN_DIR/scan.txt\" 2>&1 || true"
+  fi
+fi
+
+# [fix] collect sparse logs into run_dir and make sparse diagnostics visible in scan/mail
+SPARSE_SCAN_TXT="$RUN_DIR/scan.sparse.scan.txt"
+SPARSE_NORM_LOG="$RUN_DIR/build-logs/build.sparse.norm.log"
+if [ "$NO_BUILD" -eq 0 ] && [ "$incremental_skipped" -eq 0 ] && [ -f "$RUN_DIR/build.all.log" ]; then
+  mkdir -p "$RUN_DIR/build-logs"
+  : >"$SPARSE_NORM_LOG"
+
+  # build.all.log contains lines like:
+  #   49666:[sparse] M=net/core -> /path/to/build.sparse.net_core.log
+  grep -aE '\[sparse\].*-> ' "$RUN_DIR/build.all.log" | sed -n 's/.*-> //p' | while read -r f; do
+    [ -f "$f" ] || continue
+    cp -af "$f" "$RUN_DIR/build-logs/" 2>/dev/null || true
+    # normalize so scan-nb.sh matches P_SPARSE_DIAG ("sparse: warning|error:")
+    sed -E 's/: (warning|error): /: sparse: \1: /' "$f" >>"$SPARSE_NORM_LOG" 2>/dev/null || true
+  done
+
+  if [ -s "$SPARSE_NORM_LOG" ]; then
+    run "\"$TOOL_DIR/scan-nb.sh\" -s -n 120 -k net -r \"$LINUX_ROOT\" -o \"$O\" \"$SPARSE_NORM_LOG\" >\"$SPARSE_SCAN_TXT\" 2>&1 || true"
+    # append sparse-only scan output so summarize_scan/mail can pick it up
+    [ -f "$SPARSE_SCAN_TXT" ] && cat "$SPARSE_SCAN_TXT" >>"$RUN_DIR/scan.txt" || true
   fi
 fi
 
