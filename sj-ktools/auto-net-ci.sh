@@ -5,8 +5,9 @@ set -o pipefail
 usage() {
   cat >&2 <<'USAGE'
 usage: auto-net-ci.sh [-l] [-s] [-S "subtrees"] [-o outdir] [-t remote/branch] [-e to_email]
-                      [-c] [-m] [-F] [-U] [-K] [-T]
+                      [-c] [-m] [-F] [-U] [-K] [-T] [-P cpus] [-M mem]
                       [--reset-baseline] [--force] [--update] [--no-test] [--no-build]
+                      [--cpu N] [--mem SIZE]
 
 Defaults:
   track  : upstream/master
@@ -28,6 +29,8 @@ Options:
   -U  update: fetch + switch master + pull --ff-only TARGET_REF
   -K  build kernel only (pass -K to build-net.sh)
   -T  build tests only (pass -T to build-net.sh)
+  -P  vng guest cpus (passed to run-net.sh)
+  -M  vng guest memory (passed to run-net.sh, e.g. 2G)
 
 Long:
   --full           force full net selftests (override default fast)
@@ -36,6 +39,8 @@ Long:
   --no-test        skip vng tests
   --no-build       skip build
   --reset-baseline overwrite pinned baseline with this run
+  --cpu N          same as -P
+  --mem  SIZE      same as -M
 
 Behavior:
   - If no update AND not forced: send "no updates" mail and exit (no build/test).
@@ -91,6 +96,8 @@ TEST_FFAST=0
 DRY_RUN=0
 KERNEL_ONLY=0
 TESTS_ONLY=0
+CPUS=2
+MEM=2G
 
 # --- strip long options anywhere so getopts won't choke on "--xxx" ---
 _keep=""
@@ -103,6 +110,8 @@ while [ $# -gt 0 ]; do
     --no-build) NO_BUILD=1 ;;
     --ff) TEST_FFAST=1 ;;
     --full) TEST_FAST=0; TEST_FFAST=0 ;;
+    --cpu) CPUS="$2"; shift ;;
+    --mem) MEM="$2"; shift ;;
     --dry-run) DRY_RUN=1 ;;
     --) shift; break ;;
     --*) echo "unknown arg: $1" >&2; usage ;;
@@ -112,7 +121,7 @@ while [ $# -gt 0 ]; do
 done
 set -- $_keep "$@"
 
-while getopts "lsS:o:t:e:cmFUfhKT" opt; do
+while getopts "lsS:o:t:e:cmFUfhKTP:M:" opt; do
   case "$opt" in
     l) LLVM=1 ;;
     s) SPARSE=1 ;;
@@ -127,6 +136,8 @@ while getopts "lsS:o:t:e:cmFUfhKT" opt; do
     f) TEST_FAST=1 ;;
     K) KERNEL_ONLY=1 ;;
     T) TESTS_ONLY=1 ;;
+    P) CPUS="$OPTARG" ;;
+    M) MEM="$OPTARG" ;;
     h|*) usage ;;
   esac
 done
@@ -200,6 +211,7 @@ if [ "${DRY_RUN:-0}" -eq 1 ]; then
   elif [ "${TEST_FAST:-0}" -eq 1 ]; then
     targs="$targs -f"
   fi
+  targs="$targs -p \"$CPUS\" -m \"$MEM\""
   echo "[dry-run] run-net args: $targs" >&2
   exit 0
 fi
@@ -265,6 +277,8 @@ fi
   echo "NO_TEST=$NO_TEST"
   echo "KERNEL_ONLY=$KERNEL_ONLY"
   echo "TESTS_ONLY=$TESTS_ONLY"
+  echo "CPUS=$CPUS"
+  echo "MEM=$MEM"
   echo
   git log -1 --oneline "$new_ref" || true
 } >"$RUN_DIR/meta.txt"
@@ -575,6 +589,7 @@ if [ "$NO_TEST" -eq 0 ]; then
   elif [ "${TEST_FAST:-0}" -eq 1 ]; then
     targs="$targs -f"
   fi
+  targs="$targs -p \"$CPUS\" -m \"$MEM\""
   run "\"$TOOL_DIR/run-net.sh\" $targs |& tee \"$RUN_DIR/run-net.host.log\""
 
   if [ -f "$TEST_LOG_SRC" ]; then
