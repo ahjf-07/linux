@@ -47,5 +47,24 @@ grep -nE '^\[EXIT\]|^FAIL:' "$log" | while IFS= read -r line; do
 done
 
 echo
+echo "==== PASS details (first 50) ===="
+grep -n '^\[PASS\]' "$log" | head -n 50 || true
+
+echo
+echo "==== FAIL details (first 50) ===="
+grep -nE '^FAIL:|^\[FAIL\]' "$log" | head -n 50 || true
+
+echo
+echo "==== SKIP details (first 50) ===="
+{
+  grep -n '\[SKIP\]' "$log" || true
+  grep -n '^\[EXIT\].*[[:space:]]4$' "$log" | sed 's/^\([0-9]*:\)/\1[SKIP] /' || true
+} | head -n 50 || true
+
+echo
+echo "==== EXIT details (first 50) ===="
+grep -n '^\[EXIT\]' "$log" | grep -v '[[:space:]]4$' | head -n 50 || true
+
+echo
 echo "==== verdict ===="
 echo "OK: failures are environment-related (virtme-ng expected)"

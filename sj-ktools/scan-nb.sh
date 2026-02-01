@@ -168,13 +168,13 @@ scan_one() {
       grep -nE "$P_SPARSE_DIAG" "$LOG" \
         | sed -E 's/^[0-9]+:.*: (warning|error): /\1: /' \
         | sed -E 's/[[:space:]]+/ /g' \
-        | sort | uniq -c | sort -nr | head -n 30 || true
+        | sort | uniq -c | sort -nr | head -n 50 || true
     else
       grep -nE "$P_SPARSE_DIAG" "$LOG" \
         | filter_flood \
         | sed -E 's/^[0-9]+:.*: (warning|error): /\1: /' \
         | sed -E 's/[[:space:]]+/ /g' \
-        | sort | uniq -c | sort -nr | head -n 30 || true
+        | sort | uniq -c | sort -nr | head -n 50 || true
     fi
     echo
   fi
