@@ -134,6 +134,11 @@ shift $((OPTIND - 1))
 
 [ "$KERNEL_ONLY" -eq 1 ] && [ "$TESTS_ONLY" -eq 1 ] && KERNEL_ONLY=0 && TESTS_ONLY=0
 
+[ "$NO_BUILD" -eq 1 ] && [ "$NO_TEST" -eq 1 ] && {
+  echo "ERROR: --no-build and --no-test cannot both be set" >&2
+  exit 2
+}
+
 [ -n "$TO_EMAIL" ] || { echo "ERROR: missing recipient; use -e or set AUTO_EMAIL" >&2; exit 2; }
 
 LINUX_ROOT="$(pwd)"
@@ -456,10 +461,12 @@ if [ "$NO_BUILD" -eq 0 ]; then
   fi
 fi
 
-if [ "$incremental_skipped" -eq 1 ] && [ -f "$RUN_DIR/scan.txt" ]; then
-  echo "[auto] incremental build skipped; reuse scan.txt" >&2
-else
-  run "\"$TOOL_DIR/scan-nb.sh\" -e -w -s -n 120 -k net -r \"$LINUX_ROOT\" -o \"$O\" >\"$RUN_DIR/scan.txt\" 2>&1 || true"
+if [ "$NO_BUILD" -eq 0 ]; then
+  if [ "$incremental_skipped" -eq 1 ] && [ -f "$RUN_DIR/scan.txt" ]; then
+    echo "[auto] incremental build skipped; reuse scan.txt" >&2
+  else
+    run "\"$TOOL_DIR/scan-nb.sh\" -e -w -s -n 50 -k net -r \"$LINUX_ROOT\" -o \"$O\" >\"$RUN_DIR/scan.txt\" 2>&1 || true"
+  fi
 fi
 
 # tests (方案A): read source-root .kselftest-out then copy to RUN_DIR
@@ -489,18 +496,29 @@ else
   echo "[auto] --no-test: skip tests" >"$SUMM_LOG"
 fi
 
+BUILD_RAN=0
+SCAN_RAN=0
+TESTS_RAN=0
 
-essentials() {
-  out="$1"
-  scan="$RUN_DIR/scan.txt"
-  summ="$RUN_DIR/net.summ.txt"
+if [ "$NO_BUILD" -eq 0 ] && [ "$incremental_skipped" -eq 0 ]; then
+  BUILD_RAN=1
+fi
+
+if [ "$BUILD_RAN" -eq 1 ] && [ -f "$RUN_DIR/scan.txt" ]; then
+  SCAN_RAN=1
+fi
+
+if [ "$NO_TEST" -eq 0 ] && [ -f "$TEST_LOG_DST" ]; then
+  TESTS_RAN=1
+fi
+
+summarize_scan() {
+  scan="$1"
+  out="$2"
 
   {
-    echo "== SUBSTANTIVE SUMMARY =="
+    echo "== build + sparse summary (filtered) =="
     echo
-
-    echo "## build + sparse (filtered)"
-
     # Keep only:
     # - per-log summary block (==== build scan summary ==== ... sparse_effective ...)
     # - non-empty errors/warnings/sparse lists
@@ -565,73 +583,67 @@ essentials() {
         flush_summary();
       }
     ' "$scan" 2>/dev/null || true
-
-    echo
-    echo "## selftests (net)"
-    cat "$summ" 2>/dev/null || true
-  } >"$out"
-}
-bundle() {
-  out="$1"
-  {
-    echo "## meta"
-    cat "$RUN_DIR/meta.txt" || true
-    echo
-    echo "## scan"
-    cat "$RUN_DIR/scan.txt" || true
-    echo
-    echo "## net summary"
-    cat "$RUN_DIR/net.summ.txt" || true
   } >"$out"
 }
 
-THIS_TXT="$RUN_DIR/result.txt"
-bundle "$THIS_TXT"
+RUN_BUILD_SUMM="$RUN_DIR/build.summ.txt"
+RUN_TEST_SUMM="$RUN_DIR/test.summ.txt"
+PREV_BUILD_SUMM="$PREV_DIR/build.summ.txt"
+BASE_BUILD_SUMM="$BASE_DIR/build.summ.txt"
+PREV_TEST_SUMM="$PREV_DIR/test.summ.txt"
+BASE_TEST_SUMM="$BASE_DIR/test.summ.txt"
+DIFF_PREV_BUILD="$RUN_DIR/diff.build.vs-prev.txt"
+DIFF_BASE_BUILD="$RUN_DIR/diff.build.vs-baseline.txt"
+DIFF_PREV_TEST="$RUN_DIR/diff.test.vs-prev.txt"
+DIFF_BASE_TEST="$RUN_DIR/diff.test.vs-baseline.txt"
 
-# --- substantive summary (for email diff) ---
-THIS_ESS="$RUN_DIR/essentials.txt"
-essentials "$THIS_ESS"
+if [ "$BUILD_RAN" -eq 1 ] && [ "$SCAN_RAN" -eq 1 ]; then
+  summarize_scan "$RUN_DIR/scan.txt" "$RUN_BUILD_SUMM"
+  if [ -f "$PREV_BUILD_SUMM" ]; then
+    diff -u "$PREV_BUILD_SUMM" "$RUN_BUILD_SUMM" >"$DIFF_PREV_BUILD" || true
+    [ -s "$DIFF_PREV_BUILD" ] || echo "(no build summary diff vs prev)" >"$DIFF_PREV_BUILD"
+  else
+    echo "(no previous build summary)" >"$DIFF_PREV_BUILD"
+  fi
 
-PREV_ESS="$PREV_DIR/essentials.txt"
-BASE_ESS="$BASE_DIR/essentials.txt"
-DIFF_PREV_ESS="$RUN_DIR/diff.substantive.vs-prev.txt"
-DIFF_BASE_ESS="$RUN_DIR/diff.substantive.vs-baseline.txt"
+  if [ -f "$BASE_BUILD_SUMM" ]; then
+    diff -u "$BASE_BUILD_SUMM" "$RUN_BUILD_SUMM" >"$DIFF_BASE_BUILD" || true
+    [ -s "$DIFF_BASE_BUILD" ] || echo "(no build summary diff vs baseline)" >"$DIFF_BASE_BUILD"
+  else
+    echo "(no baseline build summary yet)" >"$DIFF_BASE_BUILD"
+  fi
 
-if [ -f "$PREV_ESS" ]; then
-  diff -u "$PREV_ESS" "$THIS_ESS" >"$DIFF_PREV_ESS" || true; [ -s "$DIFF_PREV_ESS" ] || echo "(no substantive diff vs prev)" >"$DIFF_PREV_ESS"
+  cp -f "$RUN_BUILD_SUMM" "$PREV_BUILD_SUMM"
+  cp -f "$RUN_DIR/scan.txt" "$PREV_DIR/scan.txt" 2>/dev/null || true
+  if [ "$RESET_BASELINE" -eq 1 ] || [ ! -f "$BASE_BUILD_SUMM" ]; then
+    cp -f "$RUN_BUILD_SUMM" "$BASE_BUILD_SUMM"
+  fi
 else
-  echo "(no previous substantive summary)" >"$DIFF_PREV_ESS"
+  echo "build skipped (no compile this run)" >"$RUN_BUILD_SUMM"
 fi
 
-if [ -f "$BASE_ESS" ]; then
-  diff -u "$BASE_ESS" "$THIS_ESS" >"$DIFF_BASE_ESS" || true; [ -s "$DIFF_BASE_ESS" ] || echo "(no substantive diff vs baseline)" >"$DIFF_BASE_ESS"
+if [ "$TESTS_RAN" -eq 1 ]; then
+  cp -f "$SUMM_LOG" "$RUN_TEST_SUMM"
+  if [ -f "$PREV_TEST_SUMM" ]; then
+    diff -u "$PREV_TEST_SUMM" "$RUN_TEST_SUMM" >"$DIFF_PREV_TEST" || true
+    [ -s "$DIFF_PREV_TEST" ] || echo "(no test summary diff vs prev)" >"$DIFF_PREV_TEST"
+  else
+    echo "(no previous test summary)" >"$DIFF_PREV_TEST"
+  fi
+
+  if [ -f "$BASE_TEST_SUMM" ]; then
+    diff -u "$BASE_TEST_SUMM" "$RUN_TEST_SUMM" >"$DIFF_BASE_TEST" || true
+    [ -s "$DIFF_BASE_TEST" ] || echo "(no test summary diff vs baseline)" >"$DIFF_BASE_TEST"
+  else
+    echo "(no baseline test summary yet)" >"$DIFF_BASE_TEST"
+  fi
+
+  cp -f "$RUN_TEST_SUMM" "$PREV_TEST_SUMM"
+  if [ "$RESET_BASELINE" -eq 1 ] || [ ! -f "$BASE_TEST_SUMM" ]; then
+    cp -f "$RUN_TEST_SUMM" "$BASE_TEST_SUMM"
+  fi
 else
-  echo "(no baseline yet)" >"$DIFF_BASE_ESS"
-fi
-
-PREV_TXT="$PREV_DIR/result.txt"
-BASE_TXT="$BASE_DIR/result.txt"
-DIFF_PREV="$RUN_DIR/diff.vs-prev.txt"
-DIFF_BASE="$RUN_DIR/diff.vs-baseline.txt"
-
-if [ -f "$PREV_TXT" ]; then
-  diff -u "$PREV_TXT" "$THIS_TXT" >"$DIFF_PREV" || true
-else
-  echo "(no previous result)" >"$DIFF_PREV"
-fi
-
-if [ -f "$BASE_TXT" ]; then
-  diff -u "$BASE_TXT" "$THIS_TXT" >"$DIFF_BASE" || true
-else
-  echo "(no pinned baseline yet)" >"$DIFF_BASE"
-fi
-
-cp -f "$THIS_TXT" "$PREV_TXT"
-cp -f "$THIS_ESS" "$PREV_ESS"
-cp -f "$RUN_DIR/scan.txt" "$PREV_DIR/scan.txt" 2>/dev/null || true
-if [ "$RESET_BASELINE" -eq 1 ] || [ ! -f "$BASE_TXT" ]; then
-  cp -f "$THIS_TXT" "$BASE_TXT"
-  cp -f "$THIS_ESS" "$BASE_ESS"
+  echo "tests skipped (no tests this run)" >"$RUN_TEST_SUMM"
 fi
 
 SUBJ="[auto-net][$KEY] run done: ref_updated=$ref_updated force=$FORCE HEAD=$head_after"
@@ -643,22 +655,67 @@ MAIL="$RUN_DIR/mail.mbox"
   echo "To: $TO_EMAIL"
   echo "Subject: $SUBJ"
   echo
-  echo "== DIFF (substantive) vs PREV =="
-  sed -n '1,260p' "$DIFF_PREV_ESS" || true
+  echo "== DIFF vs PREV =="
+  if [ "$BUILD_RAN" -eq 1 ] && [ "$SCAN_RAN" -eq 1 ]; then
+    echo "-- build + sparse --"
+    sed -n '1,260p' "$DIFF_PREV_BUILD" || true
+  else
+    echo "-- build + sparse --"
+    echo "build skipped (no diff/output)"
+  fi
   echo
-  echo "== DIFF (substantive) vs BASELINE =="
-  sed -n '1,260p' "$DIFF_BASE_ESS" || true
+  if [ "$TESTS_RAN" -eq 1 ]; then
+    echo "-- tests --"
+    sed -n '1,260p' "$DIFF_PREV_TEST" || true
+  else
+    echo "-- tests --"
+    echo "tests skipped (no diff/output)"
+  fi
   echo
-  echo "== CURRENT (substantive summary) =="
-  cat "$THIS_ESS" || true
+  echo "== DIFF vs BASELINE =="
+  if [ "$BUILD_RAN" -eq 1 ] && [ "$SCAN_RAN" -eq 1 ]; then
+    echo "-- build + sparse --"
+    sed -n '1,260p' "$DIFF_BASE_BUILD" || true
+  else
+    echo "-- build + sparse --"
+    echo "build skipped (no diff/output)"
+  fi
   echo
-  echo "== FULL RESULT (meta + scan + test) =="
-  cat "$THIS_TXT" || true
+  if [ "$TESTS_RAN" -eq 1 ]; then
+    echo "-- tests --"
+    sed -n '1,260p' "$DIFF_BASE_TEST" || true
+  else
+    echo "-- tests --"
+    echo "tests skipped (no diff/output)"
+  fi
+  echo
+  echo "== CURRENT SUMMARY =="
+  if [ "$BUILD_RAN" -eq 1 ] && [ "$SCAN_RAN" -eq 1 ]; then
+    echo "-- build + sparse --"
+    cat "$RUN_BUILD_SUMM" || true
+  else
+    echo "-- build + sparse --"
+    echo "build skipped (no summary output)"
+  fi
+  echo
+  if [ "$TESTS_RAN" -eq 1 ]; then
+    echo "-- tests --"
+    cat "$RUN_TEST_SUMM" || true
+  else
+    echo "-- tests --"
+    echo "tests skipped (no summary output)"
+  fi
   echo
   echo "Artifacts:"
   echo "  state dir: $STATE_DIR"
   echo "  run dir  : $RUN_DIR"
   echo "  O dir    : $O"
+  echo "  meta     : $RUN_DIR/meta.txt"
+  echo "  scan     : $RUN_DIR/scan.txt"
+  echo "  build sum: $RUN_BUILD_SUMM"
+  echo "  test sum : $RUN_TEST_SUMM"
+  echo "  build log: $RUN_DIR/build.all.log"
+  echo "  test log : $RUN_DIR/run-net.host.log"
 } >"$MAIL"
 
 run "git send-email --to \"$TO_EMAIL\" --confirm=never --no-chain-reply-to --suppress-cc=all \"$MAIL\""
