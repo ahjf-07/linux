@@ -506,6 +506,12 @@ if [ "$NO_SCAN" -eq 0 ]; then
     /^====/ { if (flag) flag=0 }
     flag && /^[0-9]+:/ { print normalize($0) }
   ' "$RUN_DIR/scan.txt" >"$WARN_LIST" 2>/dev/null || true
+  # normalize WARN_LIST list for stable diffs (trim leading spaces, stable sort)
+  if [ -f "$WARN_LIST" ] && [ -s "$WARN_LIST" ]; then
+    sed -i 's/^[[:space:]]\+//' "$WARN_LIST" 2>/dev/null || true
+    LC_ALL=C sort -u "$WARN_LIST" -o "$WARN_LIST" 2>/dev/null || true
+  fi
+
   awk '
     function normalize(line) {
       sub(/^[0-9]+:/, "", line);
@@ -516,16 +522,29 @@ if [ "$NO_SCAN" -eq 0 ]; then
     /^====/ { if (flag) flag=0 }
     flag && /^[0-9]+:/ { print normalize($0) }
   ' "$RUN_DIR/scan.txt" >"$ERR_LIST" 2>/dev/null || true
+  # normalize ERR_LIST list for stable diffs (trim leading spaces, stable sort)
+  if [ -f "$ERR_LIST" ] && [ -s "$ERR_LIST" ]; then
+    sed -i 's/^[[:space:]]\+//' "$ERR_LIST" 2>/dev/null || true
+    LC_ALL=C sort -u "$ERR_LIST" -o "$ERR_LIST" 2>/dev/null || true
+  fi
+
   awk '
-    function normalize(line) {
-      sub(/^[0-9]+:/, "", line);
-      gsub(/:[0-9]+(:[0-9]+)?:/, ":", line);
-      return line;
-    }
-    /^==== sparse diagnostics \(first / { flag=1; next }
-    /^====/ { if (flag) flag=0 }
-    flag && /^[0-9]+:/ { print normalize($0) }
-  ' "${SPARSE_SCAN_TXT:-$RUN_DIR/scan.txt}" >"$SPARSE_LIST" 2>/dev/null || true
+	function normalize(line) {
+		if (line ~ /^[0-9]+:/) sub(/^[0-9]+:/, "", line);
+		gsub(/:[0-9]+(:[0-9]+)?:/, ":", line);
+		return line;
+	}
+    /^==== sparse diagnostics/ { flag=1; next }
+    /^====/ && !/sparse/ { if (flag) flag=0 }
+    flag && /^[[:space:]]*[0-9]+[:[:space:]]/ { print normalize($0) }
+  ' "$RUN_DIR/scan.txt" "${SPARSE_SCAN_TXT:-/dev/null}" >"$SPARSE_LIST"
+  # ' "${SPARSE_SCAN_TXT:-$RUN_DIR/scan.txt}" >"$SPARSE_LIST" 2>/dev/null || true
+  # normalize SPARSE_LIST list for stable diffs (trim leading spaces, stable sort)
+  if [ -f "$SPARSE_LIST" ] && [ -s "$SPARSE_LIST" ]; then
+    sed -i 's/^[[:space:]]\+//' "$SPARSE_LIST" 2>/dev/null || true
+    LC_ALL=C sort -u "$SPARSE_LIST" -o "$SPARSE_LIST" 2>/dev/null || true
+  fi
+
 
 fi
 
@@ -661,6 +680,9 @@ build_essentials() {
       echo "(none)"
     fi
 
+  } >"$out"
+}
+
     if [ -f "$BASE_DIR/scan.warnings.txt" ] && [ -f "$WARN_LIST" ]; then
       diff -u "$BASE_DIR/scan.warnings.txt" "$WARN_LIST" >"$RUN_DIR/diff.warnings.vs-baseline.txt" || true
       if [ -s "$RUN_DIR/diff.warnings.vs-baseline.txt" ]; then
@@ -670,15 +692,12 @@ build_essentials() {
       fi
     fi
 
-  } >"$out"
-}
-
 sparses_essentials() {
   out="$1"
   topn="${AUTO_BPF_TOPN:-50}"
   {
     echo "## sparse diagnostics"
-    cat "$SPARSE_LIST" 2>/dev/null || true
+    if [ -s "$SPARSE_LIST" ]; then cat "$SPARSE_LIST"; else echo "(none)"; fi
 
     echo
     echo "## sparse diagnostics (top ${topn})"

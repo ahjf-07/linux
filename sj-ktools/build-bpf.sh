@@ -325,7 +325,8 @@ if [ "$SPARSE" -eq 1 ]; then
     tag=$(echo "$d" | tr '/.' '__')
     log="$O/build.sparse.$tag.log"
     echo "[sparse] M=$d -> $log"
-    make -C "$LINUX_ROOT" O="$O" $MAKE_SPARSE_ARGS -j"$JOBS" M="$d" 2>&1 | tee "$log"
+    make -C "$LINUX_ROOT" O="$O" $MAKE_FULL_ARGS M="$d" clean >/dev/null 2>&1 || true
+    make -C "$LINUX_ROOT" O="$O" $MAKE_SPARSE_ARGS -j"$JOBS" M="$d" modules 2>&1 | tee "$log"
   done
 fi
 

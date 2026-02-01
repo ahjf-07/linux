@@ -492,6 +492,74 @@ if [ "$NO_BUILD" -eq 0 ] && [ "$incremental_skipped" -eq 0 ] && [ -f "$RUN_DIR/b
   fi
 fi
 
+# [fix] extract lists from scan.txt for stable diffs (warnings/errors/sparse)
+WARN_LIST="$RUN_DIR/scan.warnings.txt"
+ERR_LIST="$RUN_DIR/scan.errors.txt"
+SPARSE_LIST="$RUN_DIR/scan.sparse.txt"
+
+if [ -f "$RUN_DIR/scan.txt" ]; then
+  # warnings list
+  awk '
+    function normalize(line) {
+      sub(/^[0-9]+:/, "", line);
+      gsub(/:[0-9]+(:[0-9]+)?:/, ":", line);
+      return line;
+    }
+    /^==== warnings \(first / { flag=1; next }
+    /^====/ { if (flag) flag=0 }
+    flag && /warning:/ { print normalize($0) }
+  ' "$RUN_DIR/scan.txt" >"$WARN_LIST" 2>/dev/null || true
+
+  # errors list
+  awk '
+    function normalize(line) {
+      sub(/^[0-9]+:/, "", line);
+      gsub(/:[0-9]+(:[0-9]+)?:/, ":", line);
+      return line;
+    }
+    /^==== errors \(first / { flag=1; next }
+    /^====/ { if (flag) flag=0 }
+    flag && /error:/ { print normalize($0) }
+  ' "$RUN_DIR/scan.txt" >"$ERR_LIST" 2>/dev/null || true
+
+  # sparse list (first N section)
+  awk '
+    function normalize(line) {
+      sub(/^[0-9]+:/, "", line);
+      gsub(/:[0-9]+(:[0-9]+)?:/, ":", line);
+      return line;
+    }
+    /^==== sparse diagnostics \(first / { flag=1; next }
+    /^====/ { if (flag) flag=0 }
+    flag && /(warning|error):/ { print normalize($0) }
+  ' "$RUN_DIR/scan.txt" >"$SPARSE_LIST" 2>/dev/null || true
+
+  # normalize all lists for stable diffs
+  for f in "$WARN_LIST" "$ERR_LIST" "$SPARSE_LIST"; do
+    [ -f "$f" ] || continue
+    sed -i 's/^[[:space:]]\+//' "$f" 2>/dev/null || true
+    LC_ALL=C sort -u "$f" -o "$f" 2>/dev/null || true
+  done
+fi
+
+# diffs vs prev/baseline (best-effort; files may not exist yet)
+BASE_DIR="$STATE_DIR/baseline/$KEY"
+PREV_DIR="$STATE_DIR/prev/$KEY"
+
+DIFF_WARN_PREV="$RUN_DIR/diff.warnings.vs-prev.txt"
+DIFF_WARN_BASE="$RUN_DIR/diff.warnings.vs-baseline.txt"
+DIFF_ERR_PREV="$RUN_DIR/diff.errors.vs-prev.txt"
+DIFF_ERR_BASE="$RUN_DIR/diff.errors.vs-baseline.txt"
+DIFF_SPARSE_PREV="$RUN_DIR/diff.sparse.vs-prev.txt"
+DIFF_SPARSE_BASE="$RUN_DIR/diff.sparse.vs-baseline.txt"
+
+[ -f "$PREV_DIR/scan.warnings.txt" ] && diff -u "$PREV_DIR/scan.warnings.txt" "$WARN_LIST" >"$DIFF_WARN_PREV" || true
+[ -f "$BASE_DIR/scan.warnings.txt" ] && diff -u "$BASE_DIR/scan.warnings.txt" "$WARN_LIST" >"$DIFF_WARN_BASE" || true
+[ -f "$PREV_DIR/scan.errors.txt" ] && diff -u "$PREV_DIR/scan.errors.txt" "$ERR_LIST" >"$DIFF_ERR_PREV" || true
+[ -f "$BASE_DIR/scan.errors.txt" ] && diff -u "$BASE_DIR/scan.errors.txt" "$ERR_LIST" >"$DIFF_ERR_BASE" || true
+[ -f "$PREV_DIR/scan.sparse.txt" ] && diff -u "$PREV_DIR/scan.sparse.txt" "$SPARSE_LIST" >"$DIFF_SPARSE_PREV" || true
+[ -f "$BASE_DIR/scan.sparse.txt" ] && diff -u "$BASE_DIR/scan.sparse.txt" "$SPARSE_LIST" >"$DIFF_SPARSE_BASE" || true
+
 # tests (方案A): read source-root .kselftest-out then copy to RUN_DIR
 TEST_LOG_SRC="$LINUX_ROOT/.kselftest-out/net.selftests.log"
 TEST_LOG_DST="$RUN_DIR/net.selftests.log"
@@ -640,6 +708,10 @@ if [ "$BUILD_RAN" -eq 1 ] && [ "$SCAN_RAN" -eq 1 ]; then
   cp -f "$RUN_DIR/scan.txt" "$PREV_DIR/scan.txt" 2>/dev/null || true
   if [ "$RESET_BASELINE" -eq 1 ] || [ ! -f "$BASE_BUILD_SUMM" ]; then
     cp -f "$RUN_BUILD_SUMM" "$BASE_BUILD_SUMM"
+# 复制相关的 list 文件到 baseline 目录
+    cp -f "$WARN_LIST" "$BASE_DIR/scan.warnings.txt" 2>/dev/null || true
+    cp -f "$ERR_LIST" "$BASE_DIR/scan.errors.txt" 2>/dev/null || true
+    cp -f "$SPARSE_LIST" "$BASE_DIR/scan.sparse.txt" 2>/dev/null || true
   fi
 else
   echo "build skipped (no compile this run)" >"$RUN_BUILD_SUMM"
