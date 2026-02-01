@@ -44,6 +44,7 @@ Long:
 
 Behavior:
   - If no update AND not forced: send "no updates" mail and exit (no build/test).
+  - -c/-m imply forced run (rebuild even when ref unchanged).
   - If update OR forced:
       * default: build/test current HEAD (dirty OK)
       * with -U: require clean tree, switch to master, pull --ff-only TARGET_REF, then build/test
@@ -149,6 +150,8 @@ shift $((OPTIND - 1))
   echo "ERROR: --no-build and --no-test cannot both be set" >&2
   exit 2
 }
+
+[ "$CLEAN" -eq 1 ] || [ "$MRPROPER" -eq 1 ] && FORCE=1
 
 [ -n "$TO_EMAIL" ] || { echo "ERROR: missing recipient; use -e or set AUTO_EMAIL" >&2; exit 2; }
 
