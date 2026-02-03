@@ -33,6 +33,9 @@ static inline void cleanup_nf_conntrack_bpf(void)
     (IS_MODULE(CONFIG_NF_NAT) && IS_ENABLED(CONFIG_DEBUG_INFO_BTF_MODULES))
 
 extern int register_nf_nat_bpf(void);
+int bpf_ct_set_nat_info(struct nf_conn___init *nfct,
+			union nf_inet_addr *addr, int port,
+			enum nf_nat_manip_type manip);
 
 #else
 
