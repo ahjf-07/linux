@@ -8,11 +8,11 @@
 
 #define IRC_PORT	6667
 
-extern unsigned int (*nf_nat_irc_hook)(struct sk_buff *skb,
-				       enum ip_conntrack_info ctinfo,
-				       unsigned int protoff,
-				       unsigned int matchoff,
-				       unsigned int matchlen,
-				       struct nf_conntrack_expect *exp);
+extern unsigned int (__rcu *nf_nat_irc_hook)(struct sk_buff *skb,
+					     enum ip_conntrack_info ctinfo,
+					     unsigned int protoff,
+					     unsigned int matchoff,
+					     unsigned int matchlen,
+					     struct nf_conntrack_expect *exp);
 
 #endif /* _NF_CONNTRACK_IRC_H */
